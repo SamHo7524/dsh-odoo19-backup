@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "title": "dsh-odoo19-backup",
+    "description": "远程备份 Odoo 19（数据库 + filestore + addons + 运行时依赖 + 配置）并安全恢复到任意服务器。恢复走临时库验证、停机切换与失败回滚。"
+  },
+  "ui": {
+    "tab.servers": "服务器",
+    "tab.backup": "备份",
+    "tab.restore": "恢复",
+    "server.add": "添加服务器",
+    "server.test": "测试连接",
+    "server.scan": "扫描",
+    "server.fingerprint": "确认指纹",
+    "backup.start": "开始备份",
+    "restore.precheck": "预检",
+    "restore.start": "执行恢复",
+    "task.running": "执行中",
+    "task.done": "完成",
+    "task.failed": "失败",
+    "task.delete": "删除"
+  }
+}

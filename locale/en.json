@@ -1,0 +1,22 @@
+{
+  "meta": {
+    "title": "dsh-odoo19-backup",
+    "description": "Back up Odoo 19 remotely (database + filestore + addons + runtime deps + config) and restore safely to any server. Restore runs through temp-DB verification, downtime switch, and rollback on failure."
+  },
+  "ui": {
+    "tab.servers": "Servers",
+    "tab.backup": "Backup",
+    "tab.restore": "Restore",
+    "server.add": "Add server",
+    "server.test": "Test",
+    "server.scan": "Scan",
+    "server.fingerprint": "Confirm fingerprint",
+    "backup.start": "Start backup",
+    "restore.precheck": "Precheck",
+    "restore.start": "Restore",
+    "task.running": "Running",
+    "task.done": "Done",
+    "task.failed": "Failed",
+    "task.delete": "Delete"
+  }
+}

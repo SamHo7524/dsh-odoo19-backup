@@ -1,0 +1,10 @@
+- insert:
+    - id: odoo-backup
+      name: '@local/dsh-odoo19-backup'
+      config:
+        servers: []
+        localBackupDir: 'K:/Backup/odoo'
+        keepDays: 30
+        sshTimeoutMs: 30000
+        transferTimeoutMs: 3600000
+        allowUnencryptedPackage: false
