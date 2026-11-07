@@ -8,6 +8,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.9] — 2026-11-07
+
+**Self-service keyPath inside the trust panel** — fixes the onboarding dead end for every newly added host.
+
+### Problem
+On a fresh host (`new.toogel.cn` / `154.21.201.22`), the trust panel's **读取本机公钥 (Load local public key)** failed with "未配置 keyPath…请先填写私钥路径", but the panel had **no keyPath field** — users had to close the panel, click 编辑, fill the private-key path elsewhere, and reopen. This would recur for every new host.
+
+### Fixed
+- `TrustHostPanel` now has an inline **本机私钥路径 (local private key path)** input, pre-filled from the server's existing `keyPath` when any.
+- `doLoadPubkey` uses the panel's `keyPath` value; when empty it shows an **inline** hint pointing at the field above instead of sending a failing API call.
+- Panel copy now explicitly distinguishes the two opposite-direction public keys: the scan result is **服务器主机公钥** (server proves itself), while the key sent to the owner is **本插件客户端公钥** (we prove we hold the private key). No more confusion between the two.
+
+### Security
+- No changes to `guardHostKey`'s three allow paths, fail-closed, `requireTrusted`, `/trust-host`, `/client-pubkey` or the `volatile` config mechanism.
+- `/client-pubkey` still reads **only** `keyPath + '.pub'`; the private key is never read, returned or logged.
+- `UI-8..12` regression tests (incl. an explicit "security logic unchanged" assertion); **258 / 258** total.
+
+### Verified
+- Full suite 258/258; syntax clean; `RELEASE_BUILD=PASS`.
+- `dsh-odoo19-backup-0.1.9.tgz` built with SHA256 recorded below.
+
+---
+
 ## [0.1.8] — 2026-11-07
 
 **SSH host secure onboarding experience** — first-time host trust and public-key authentication are now two clearly separated, self-service flows in the UI.
