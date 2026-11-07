@@ -79,7 +79,14 @@ function deps(overrides = {}) {
     stat: async () => ({ size: 1 }),
     detectFormat: async () => 'dsh-odoo',
     runRestore: async () => ({ ok: true }),
+    // v0.1.11：口令统一走 Credentials；stub 默认未配置（未提供 credentialsValue 时 resolve 返回 undefined），
+    // 需要有效口令的测试用 overrides 传入 credentialsValue。
     ...overrides,
+    credentials: overrides.credentials ?? {
+      resolve: async (ref) => (overrides.credentialsValue === undefined
+        ? undefined
+        : { value: overrides.credentialsValue, source: 'file' }),
+    },
   };
 }
 
@@ -91,14 +98,14 @@ test('service.backup 未配置口令时拒绝，且不调用 discover/runBackup'
 });
 
 test('service.backup 空口令时拒绝', async () => {
-  const d = deps();
+  const d = deps({ credentialsValue: '' });
   const svc = createService({ config: { servers: [srv], localBackupDir: 'K:/b', passphrase: '' }, deps: d });
   await assert.rejects(() => svc.backup('staging'), (e) => MSG.test(e.message));
   assert.equal(d.calls.length, 0);
 });
 
 test('service.backup 有效口令时正常执行且透传口令', async () => {
-  const d = deps();
+  const d = deps({ credentialsValue: 'pw' });
   const svc = createService({ config: { servers: [srv], localBackupDir: 'K:/b', passphrase: 'pw' }, deps: d });
   const r = await svc.backup('staging');
   assert.equal(r.ok, true);
@@ -116,7 +123,7 @@ test('odoo_backup 工具在无口令时返回可操作错误', async () => {
   });
   await assert.rejects(
     () => tool.execute({ action: 'backup', server: 'staging' }),
-    (e) => MSG.test(e.message) && /设置页|配置/.test(e.message),
+    (e) => MSG.test(e.message) && /凭证|口令/.test(e.message),
   );
 });
 
