@@ -285,6 +285,9 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
       return send(200, { ok: true, result: await service.discover(body.server) });
     }
     if (route === '/backup') {
+      // 自愈通道：handler 每次请求都有 webCtx.credentials，补挂给 service
+      // （防独立 inject 的时序问题；幂等，CRED-16/17）。
+      if (credentials) service.attachCredentials?.(credentials);
       return send(200, { ok: true, result: await service.backup(body.server) });
     }
     if (route === '/status') {
@@ -303,6 +306,7 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
       return send(200, { ok: true, confirmToken: token, expiresInSeconds: 300 });
     }
     if (route === '/restore') {
+      if (credentials) service.attachCredentials?.(credentials);
       if (!body.confirmToken) throw new Error('缺少 confirmToken，请先预检');
       tokenStore.verify(body.confirmToken, {
         server: body.server,
