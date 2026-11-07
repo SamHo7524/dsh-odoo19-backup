@@ -295,11 +295,11 @@ test('FORM-3 填写 sshConfigAlias 后保存，写入该字段（不丢失）', 
     'sshConfigAlias 必须随服务器一起保存，否则 guardHostKey 仍会拒绝');
 });
 
-test('FORM-4 已有服务器行提供「扫描指纹」按钮（只显示、不自动固化）', () => {
+test('FORM-4 已有服务器行提供「重新扫描」按钮（v0.1.8 起并入信任主机面板）', () => {
   const scope = makeScope({ servers: [{ name: 'toogel', host: '47.121.205.143', port: 22, user: 'root' }] });
   const h = loadClient({ configForms: makeForms('include:odoo-backup', scope) });
   const reg = h.live()[0];
   const tree = mount(reg.comp, reg.opts.inject?.() ?? {});
-  const scanBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('扫描指纹')))[0];
-  assert.ok(scanBtn, '服务器行应有「扫描指纹」按钮，让用户能取得指纹供人工核对');
+  const rescanBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('重新扫描')))[0];
+  assert.ok(rescanBtn, '服务器行应有「重新扫描」按钮；扫描与信任确认统一在「信任主机」面板完成');
 });
