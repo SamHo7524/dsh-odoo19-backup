@@ -23,6 +23,7 @@ const useState = (init) => {
   return [state[i], (v) => { state[i] = typeof v === 'function' ? v(state[i]) : v; }];
 };
 const useCallback = (fn) => fn;
+const useEffect = () => {}; // 替身：不执行副作用
 const useSyncExternalStore = (subscribe, getSnapshot) => getSnapshot();
 
 function loadClient({ scope, serveNamespace = true }) {
@@ -41,7 +42,7 @@ function loadClient({ scope, serveNamespace = true }) {
   new Function('window', 'fetch', src)(win, async () => ({ json: async () => ({ ok: true }) }));
 
   const factoryResult = registered.factory((name) => {
-    if (name === 'react') return { createElement, useState, useCallback, useSyncExternalStore };
+    if (name === 'react') return { createElement, useState, useCallback, useEffect, useSyncExternalStore };
     throw new Error('unknown module ' + name);
   });
 
