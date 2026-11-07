@@ -8,6 +8,23 @@
 
 ---
 
+## [0.1.10] — 2026-11-07
+
+**本机私钥路径改为文件浏览器选择，不再需要自己输入路径。**
+
+### 变更
+- 信任面板的「本机私钥路径」手输框改为**「选择私钥文件」**按钮 + 隐藏 `<input type="file">`。
+- 选中后用桌面端官方桥 `globalThis.__DSH_HOST_PATHS__.pathFor(file)`（Electron `webUtils.getPathForFile`）取得**真实绝对路径**，回写面板 `keyPath` 状态；路径显示在**只读**框里。
+- 保留**「手动输入路径」**降级入口：非桌面/浏览器环境拿不到真实路径时给出明确内联提示。
+- 隐藏 input 用 `data-trust-file-input="<服务器名>"` 精确归属，多台服务器同时展开不会点错。
+
+### 安全
+- **只取路径**：私钥文件绝不读取、绝不上传、绝不进入任何请求体——无 `FileReader`、无 `readAsText`、无文件对象入 body（`PICK-3` 断言）。
+- `guardHostKey` 三放行、fail-closed、`requireTrusted`、`/trust-host`、`/client-pubkey`（只读 `keyPath + '.pub'`）、`.volatile()` 机制**全部未改**。
+- `PICK-1..6` 回归测试；全套 **265 / 265**。
+
+---
+
 ## [0.1.9] — 2026-11-07
 
 **信任面板内自助填写 keyPath** —— 修掉「以后每台新主机都会卡住」的引导断点。
