@@ -13,6 +13,12 @@ function deps(overrides = {}) {
     runRestore: async () => ({ ok: true }),
     detectFormat: async () => 'dsh-odoo',
     stat: async () => ({ size: 1 }),
+    // v0.1.11：口令统一走 Credentials；stub 从 overrides.credentialsValue 取
+        credentials: overrides.credentials ?? {
+      resolve: async () => (overrides.credentialsValue ?? cfg?.passphrase
+        ? { value: overrides.credentialsValue ?? cfg?.passphrase, source: 'file' }
+        : undefined),
+    },
     ...overrides,
   };
 }
@@ -20,26 +26,25 @@ function deps(overrides = {}) {
 // 直接读源码断言 schema 字段：避免测试环境缺 @deepseek-ai/schemastery
 const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
 
-test('Config schema 必须声明 passphrase（否则备份永不加密）', () => {
-  assert.match(indexSrc, /passphrase:\s*z/, 'Config 缺少 passphrase 字段');
-});
-
 test('Config schema 保留 keepDays / localBackupDir / allowUnencryptedPackage', () => {
   assert.match(indexSrc, /keepDays:\s*z\./);
   assert.match(indexSrc, /localBackupDir:\s*z\./);
   assert.match(indexSrc, /allowUnencryptedPackage:\s*z/);
 });
 
-test('service.backup 把配置的 passphrase 传给 runBackup（R10 强制加密）', async () => {
+test('service.backup 把 Credentials 口令传给 runBackup（R10 强制加密）', async () => {
   const svc = createService({
-    config: { servers: [srv], localBackupDir: 'K:/b', passphrase: 'secret-pw' },
-    deps: deps(),
+    config: { servers: [srv], localBackupDir: 'K:/b' },
+    deps: deps({ credentialsValue: 'secret-pw' }),
   });
   const r = await svc.backup('s');
   assert.equal(r.encrypted, true, 'passphrase 未传下去，备份不会加密');
 });
 
-test('未配置 passphrase 时备份被拒绝（U4 fail-closed）', async () => {
-  const svc = createService({ config: { servers: [srv], localBackupDir: 'K:/b' }, deps: deps() });
-  await assert.rejects(() => svc.backup('s'), /加密口令|passphrase/);
+test('未配置口令（凭证缺位）时备份被拒绝（U4 fail-closed）', async () => {
+  const svc = createService({
+    config: { servers: [srv], localBackupDir: 'K:/b' },
+    deps: deps({ credentialsValue: '' }), // 凭证存在但为空 → 视为未配置
+  });
+  await assert.rejects(() => svc.backup('s'), /加密口令|R10/);
 });
