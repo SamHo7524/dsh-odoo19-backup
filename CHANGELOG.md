@@ -8,6 +8,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.12] — 2026-11-07
+
+**scp supports `sshConfigAlias`, and transfer progress is real.**
+
+### Problem
+A real backup of `toogel` (authenticated by `sshConfigAlias: toogel-vault`) succeeded over SSH but failed at the scp stage with `Permission denied (publickey,password)` — `scpDownload`/`scpUpload` only used `keyPath`, while `buildSshArgs` already supported aliases. Also the 563.8MB transfer showed `transferring 60%` for ~24 minutes with no progress.
+
+### Added / Fixed
+- `lib/ssh.js`: `buildScpArgs(server, {direction, remotePath, localPath})` — alias hosts use `<alias>:<path>` so `~/.ssh/config` supplies HostName/User/IdentityFile; `BatchMode=yes` and `StrictHostKeyChecking=yes` are always kept. `parseScpProgress()` and `computeTransferPercent(localBytes, expectedBytes)`.
+- `backup.js` / `restore.js`: both scp paths now use `buildScpArgs` (no more hand-built `user@host`).
+- `backup.js` `scpDownload`: progress comes from **polling the local file size** against the remote `outerSize` (OpenSSH's `%` meter only prints on a tty; our `spawn` uses pipes, so it would never fire). Percentage maps into the `transferring` phase (60–80%) with a `正在下载备份单元 N%` message; the timer/interval are cleaned up on success, error and timeout.
+
+### Security
+- No password auth, no `accept-new`, no changes to `guardHostKey`, fail-closed, R10, encryption, or the restore state machine. Alias trust still flows through the user's own `~/.ssh/config`.
+- 12 new tests (SCP-1..12); **293 / 293** total.
+
+---
+
 ## [0.1.11] — 2026-11-07
 
 **Backup passphrase moves to the official DSH Credentials service.**
