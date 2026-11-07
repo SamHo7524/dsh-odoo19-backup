@@ -141,7 +141,7 @@ const releaseManifest = {
     format: 'tar.gz (DSH bundle, install_bundle 可用目录或 tgz)',
   },
   verification: {
-    unitTests: '258/258',
+    unitTests: '259/259',
     syntax: '15/15',
     redGreen: 'REG-1..8 + STORE-1..2 + ADD-1..3 + SCOPE-1..2 经 RED/GREEN 验证（含 getSnapshot 崩溃与 Electron 无 prompt 回归）',
     application: 'applies, warnings: []',
