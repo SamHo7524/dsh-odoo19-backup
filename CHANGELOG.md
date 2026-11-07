@@ -8,6 +8,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.10] — 2026-11-07
+
+**Pick the private key with a file browser instead of typing its path.**
+
+### Changed
+- The trust panel's 「本机私钥路径」 manual text input is replaced by a **「选择私钥文件」** button backed by a hidden `<input type="file">`.
+- On selection, the real absolute path is obtained through the official desktop bridge `globalThis.__DSH_HOST_PATHS__.pathFor(file)` (Electron `webUtils.getPathForFile`), then written back to the panel's `keyPath` state. The path is shown in a **read-only** display field.
+- A **「手动输入路径」** fallback remains for non-desktop/browser environments where `getPathForFile` is unavailable; a clear inline message explains why.
+- The hidden input is scoped with `data-trust-file-input="<server name>"` so multiple expanded panels never target the wrong input.
+
+### Security
+- **Only the path is taken.** The private key file is never read, uploaded, or placed in any API body — no `FileReader`, no `readAsText`, no file object in requests (asserted by `PICK-3`).
+- `guardHostKey`'s three allow paths, fail-closed, `requireTrusted`, `/trust-host`, `/client-pubkey` (reads only `keyPath + '.pub'`) and the `volatile` config mechanism are **unchanged**.
+- `PICK-1..6` regression tests; **265 / 265** total.
+
+---
+
 ## [0.1.9] — 2026-11-07
 
 **Self-service keyPath inside the trust panel** — fixes the onboarding dead end for every newly added host.
