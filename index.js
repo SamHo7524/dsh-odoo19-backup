@@ -11,6 +11,8 @@ import {
 
 export const name = 'odoo-backup';
 export const inject = ['tools'];
+// webServer/settings/credentials 在 apply 内用 ctx.inject([...]) 按需注入
+// （UI 路由需要全部三个；credentials 用于备份加密口令的官方存储）。
 
 /**
  * 插件配置 schema。schemastery 会填充默认值，DSH 设置页据此自动渲染表单，
@@ -90,7 +92,7 @@ export function apply(ctx, config) {
   ctx.effect(() => ctx.tools.register(restoreTool), 'odoo-backup: odoo_restore tool');
 
   // UI 数据面：设置页的服务器列表/备份/恢复按钮调用这些路由。
-  ctx.inject(['webServer', 'settings'], (webCtx) => {
+  ctx.inject(['webServer', 'settings', 'credentials'], (webCtx) => {
     webCtx.effect(
       () => webCtx.webServer.register({
         kind: 'prefix',
@@ -99,6 +101,8 @@ export function apply(ctx, config) {
           req, res, config, service, tokenStore,
           // Host 侧的官方设置服务：写入 profile patch，volatile 字段运行时可写。
           settings: webCtx.settings,
+          // Host 侧的官方凭证服务：备份加密口令只存 Credentials（v0.1.11）。
+          credentials: webCtx.credentials,
           entryId: 'odoo-backup',
           readPublicKey: (p) => readFile(p, 'utf8'),
         }),
@@ -118,7 +122,7 @@ export function apply(ctx, config) {
  *  - 破坏性恢复仍需 confirmToken（绑定目标 + 5 分钟 + 一次性）
  *  - 真正的授权由 Agent 工具链与用户确认承担
  */
-async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId, readPublicKey }) {
+async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId, readPublicKey, credentials }) {
   const send = (status, body) => {
     res.statusCode = status;
     res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -159,6 +163,32 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
   const route = url.pathname.replace(/^\/odoo-backup/, '') || '/';
 
   try {
+    if (route === '/passphrase-status') {
+      // 只回状态，绝不回口令值（CRED-8）。
+      if (!credentials || typeof credentials.describe !== 'function') {
+        throw new Error('凭证服务不可用（ctx.credentials 未注入）');
+      }
+      const info = await credentials.describe('ODOO_BACKUP_PASSPHRASE');
+      return send(200, { ok: true, configured: Boolean(info?.configured), source: info?.source ?? null });
+    }
+    if (route === '/set-passphrase') {
+      // 转调官方凭证服务；空值直接拒绝；成功后不回显口令（CRED-9）。
+      if (!credentials || typeof credentials.set !== 'function') {
+        throw new Error('凭证服务不可用（ctx.credentials 未注入）');
+      }
+      const value = typeof body.passphrase === 'string' ? body.passphrase : '';
+      if (value.length === 0) throw new Error('口令不能为空；如需移除请使用清除口令');
+      await credentials.set('ODOO_BACKUP_PASSPHRASE', value);
+      return send(200, { ok: true, configured: true });
+    }
+    if (route === '/unset-passphrase') {
+      if (!credentials || typeof credentials.unset !== 'function') {
+        throw new Error('凭证服务不可用（ctx.credentials 未注入）');
+      }
+      await credentials.unset('ODOO_BACKUP_PASSPHRASE');
+      const info = credentials.describe ? await credentials.describe('ODOO_BACKUP_PASSPHRASE') : null;
+      return send(200, { ok: true, configured: Boolean(info?.configured) });
+    }
     if (route === '/save-servers') {
       // 保存服务器列表：走 Host 官方 settings 服务，前端无需猜 configForms namespace。
       // volatile 标记 + settings.update 组合保证写入真正落盘（profile patch）且
