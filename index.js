@@ -1,8 +1,13 @@
 import z from '@deepseek-ai/schemastery';
+import { readFile } from 'node:fs/promises';
 import { createTokenStore } from './lib/tokens.js';
 import { createService } from './lib/service.js';
 import { createOdooBackupTool, createOdooRestoreTool } from './lib/tools.js';
 import { scanHostKey, pinHostKey } from './lib/knownhosts.js';
+import {
+  normalizeFp, verifyFingerprint, confirmTrust, applyTrust,
+  publicKeyPathOf, validatePublicKey, fingerprintCommand, authorizedKeysCommand,
+} from './lib/trust.js';
 
 export const name = 'odoo-backup';
 export const inject = ['tools'];
@@ -54,7 +59,7 @@ export const Config = z.object({
 });
 
 /** volatile 字段解析为 { get(): T } 活引用；读取时解包为普通值。 */
-function unwrapVolatile(value) {
+export function unwrapVolatile(value) {
   if (value !== null && typeof value === 'object' && typeof value.get === 'function') return value.get();
   return value;
 }
@@ -95,6 +100,7 @@ export function apply(ctx, config) {
           // Host 侧的官方设置服务：写入 profile patch，volatile 字段运行时可写。
           settings: webCtx.settings,
           entryId: 'odoo-backup',
+          readPublicKey: (p) => readFile(p, 'utf8'),
         }),
       }),
       'odoo-backup: settings UI routes',
@@ -112,7 +118,7 @@ export function apply(ctx, config) {
  *  - 破坏性恢复仍需 confirmToken（绑定目标 + 5 分钟 + 一次性）
  *  - 真正的授权由 Agent 工具链与用户确认承担
  */
-async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId }) {
+async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId, readPublicKey }) {
   const send = (status, body) => {
     res.statusCode = status;
     res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -171,12 +177,57 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
       return send(200, { ok: true, servers });
     }
     if (route === '/servers') {
+      // 增量返回信任相关字段，供 UI 分别显示「主机身份」与「登录认证」状态。
+      // 只回传公钥路径/指纹（非秘密），绝不回传私钥内容。
       return send(200, {
         ok: true,
         servers: (unwrapVolatile(config.servers) ?? []).map((s) => ({
           name: s.name, host: s.host, port: s.port ?? 22, user: s.user ?? 'root',
+          keyPath: s.keyPath ?? '', sshConfigAlias: s.sshConfigAlias ?? '',
+          pinnedFingerprint: s.pinnedFingerprint ?? '',
         })),
       });
+    }
+    if (route === '/client-pubkey') {
+      // 只读取 .pub 公钥文件；绝不读取、返回或记录私钥内容。
+      const kp = String(body.keyPath ?? '').trim();
+      if (!kp) throw new Error('未配置 keyPath（本地私钥路径），无法读取对应公钥；请先在服务器表单填写私钥路径');
+      const pubPath = publicKeyPathOf(kp);
+      const reader = readPublicKey ?? ((p) => readFile(p, 'utf8'));
+      const text = String(await reader(pubPath) ?? '').trim();
+      const v = validatePublicKey(text);
+      if (!v.ok) throw new Error(`公钥文件无效：${v.reason}（路径 ${pubPath}）`);
+      return send(200, { ok: true, publicKey: text, path: pubPath });
+    }
+    if (route === '/trust-host') {
+      // 主机信任确认：重新扫描 → 三方核对身份 → 比对回传指纹与类型 →
+      // 一致才只更新 pinnedFingerprint（不覆盖 keyPath / 其他服务器配置）。
+      if (!body.server) throw new Error('缺少 server 参数');
+      const current = (unwrapVolatile(config.servers) ?? []).find((s) => s.name === body.server);
+      if (!current) throw new Error(`未找到服务器: ${body.server}`);
+      const rawScan = await service.fingerprint(body.server);
+      const scan = { ...rawScan, user: current.user ?? 'root' };
+      if (!scan.ok) throw new Error(`扫描失败：${scan.error?.message ?? '未取得主机公钥'}`);
+      const verdict = confirmTrust({
+        server: current, scan,
+        answerFp: body.answerFingerprint, answerType: body.answerType,
+        answerFromScanResult: false,
+      });
+      if (!verdict.ok) throw new Error(verdict.reason);
+      // 额外防线：核对 UI 扫描时记录的期望身份，防止核验后配置被替换。
+      if (body.expectedHost && body.expectedHost !== current.host) {
+        throw new Error('服务器 host 在核验后被修改，拒绝保存信任（请重新扫描）');
+      }
+      if (body.expectedPort && Number(body.expectedPort) !== Number(current.port ?? 22)) {
+        throw new Error('服务器 port 在核验后被修改，拒绝保存信任（请重新扫描）');
+      }
+      if (body.expectedUser && body.expectedUser !== (current.user ?? 'root')) {
+        throw new Error('服务器 user 在核验后被修改，拒绝保存信任（请重新扫描）');
+      }
+      const next = (unwrapVolatile(config.servers) ?? []).map((s) =>
+        s.name === body.server ? applyTrust(s, `SHA256:${verdict.fingerprint}`) : s);
+      await settings.update(entryId, { servers: next });
+      return send(200, { ok: true, servers: next });
     }
     if (route === '/fingerprint') {
       if (!body.server) throw new Error('缺少 server 参数');
