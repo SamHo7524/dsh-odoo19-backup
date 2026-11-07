@@ -112,3 +112,43 @@ test('UI-7 面板明确要求「粘贴服务器所有者回传值」，不允许
   const txt = texts(tree).join('\n');
   assert.match(txt, /所有者|回传|独立/);
 });
+
+// ---------------------------------------------------------------- v0.1.9 方案 B
+
+test('UI-8 信任面板内直接提供「本机私钥路径」输入框（不用退出面板去点编辑）', () => {
+  // 面板默认收起，用源码级静态断言验证输入框存在（React 替身不模拟展开）
+  assert.match(src, /aria-label:\s*'本机私钥路径'|placeholder:\s*'本机私钥路径/,
+    '信任面板内必须有 keyPath 输入框，否则以后每台新主机都会卡在「读取本机公钥」');
+});
+
+test('UI-9 面板把 keyPath 作为信任状态的一部分，读取公钥使用该面板值', () => {
+  assert.match(src, /onLoadPubkey:\s*\(\) => doLoadPubkey/);
+  // doLoadPubkey 必须优先用面板状态里的 keyPath，而不是只读 server.keyPath
+  assert.match(src, /doLoadPubkey[\s\S]{0,500}st\.keyPath/,
+    'doLoadPubkey 应使用面板状态里的 keyPath');
+  assert.match(src, /keyPath:\s*trust\[s\.name\]\?\.keyPath/,
+    '展开面板时应把已有 keyPath 带进面板状态');
+});
+
+test('UI-10 面板文案明确区分两个方向的公钥（服务器主机公钥 vs 本插件客户端公钥）', () => {
+  assert.match(src, /服务器主机公钥|主机公钥（扫描|服务器证明自己/,
+    '必须说明扫描值是「服务器主机公钥」');
+  assert.match(src, /本插件.*公钥|客户端公钥|本机公钥/, '必须说明发给所有者的是「本插件客户端公钥」');
+  assert.match(src, /方向|不是同一|两件独立/, '必须点明两者方向不同、不是同一个东西');
+});
+
+test('UI-11 未配置 keyPath 时，面板内联提示可填路径，不指向「服务器表单」外部', () => {
+  assert.match(src, /请先.*填写.*私钥路径|在上方填写.*私钥路径/,
+    '错误提示应引导在面板内填写，而不是让用户猜去别处编辑');
+  assert.ok(!/请先设置 keyPath（请先设置 keyPath）/.test(src));
+});
+
+test('UI-12 方案 B 不改动安全逻辑：guardHostKey 三放行与 fail-closed 保持', () => {
+  const ssh = readFileSync(new URL('../lib/ssh.js', import.meta.url), 'utf8');
+  const idx = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  assert.match(ssh, /if \(server.sshConfigAlias\)/);
+  assert.match(ssh, /if \(!server.pinnedFingerprint\)/);
+  assert.match(ssh, /fail-closed|绝不/);
+  assert.match(idx, /route === '\/trust-host'/);
+  assert.match(idx, /confirmTrust\(/);
+});
