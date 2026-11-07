@@ -8,6 +8,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.8] — 2026-11-07
+
+**SSH host secure onboarding experience** — first-time host trust and public-key authentication are now two clearly separated, self-service flows in the UI.
+
+### Added
+- `lib/trust.js`: `normalizeFp`, `verifyFingerprint` (SHA256 + key-type comparison), `confirmTrust` (re-checks host/port/user against the scan, rejects copy-of-scan-value), `applyTrust` (writes **only** `pinnedFingerprint`), `isTrustValid` (trust does not migrate to a changed target), `validatePublicKey`, `publicKeyPathOf` (only `.pub`), `fingerprintCommand`, and an **idempotent** `authorizedKeysCommand` (no overwrite, dedupe, chmod 700/600, self-check).
+- Host routes: `POST /client-pubkey` (returns **only** the public key from `keyPath + '.pub'`; never reads/returns/logs the private key), `POST /trust-host` (re-scan → identity re-check → fingerprint/type comparison → update only `pinnedFingerprint` via `/save-servers`), and incremental fields on `/servers` (`keyPath` / `sshConfigAlias` / `pinnedFingerprint`).
+- Client `TrustHostPanel`: per-server **信任主机 / 编辑 / 重新扫描** buttons, separate **主机身份** and **登录认证** status lines, the local public key, the idempotent install command, `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, an "owner-returned fingerprint" input, and a confirm button enabled only when the returned value matches the scan.
+
+### Fixed
+- Removed the misleading `action=pin` guidance: pinning `known_hosts` never wrote `pinnedFingerprint`, so following it could never establish trust. The refusal message now distinguishes host-identity verification from login authentication.
+- `classifySshError` messages now separately describe auth failure (`Permission denied`), host-key failure, timeout and refused connections.
+
+### Security
+- Host-key verification and client public-key authentication remain **two independent mechanisms**; no automatic trust, no `known_hosts` as trust source, no private key in any API response or log.
+- `guardHostKey`'s three allow paths, fail-closed, `requireTrusted` and the `volatile` config mechanism are **unchanged**.
+- 27 new tests (TRUST-1..14, API-1..6, UI-1..7); **253 / 253** total.
+- `/pin` route kept for old Agent callers but no longer exposed in the UI.
+
+### Verified (real host)
+- Correct fingerprint + correct public key → `/test` 200 `ok=true`; wrong fingerprint → 400 "host key mismatch, possible MITM"; wrong/unauthorized key → `Permission denied`/`Identity file not accessible` (auth error, not fingerprint error); existing `toogel` (sshConfigAlias) still 200 `ok=true`.
+
+---
+
 ## [0.1.7] — 2026-11-06
 
 **First public GitHub release. All identifiers lowercased; installable directly from GitHub.**
