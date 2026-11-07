@@ -40,6 +40,13 @@ function deps(overrides = {}) {
     },
     stat: async () => ({ size: 100 }),
     detectFormat: async () => 'plain',
+    // v0.1.11：口令统一走 Credentials；测试注入固定口令的 stub
+    credentials: {
+      resolve: async (ref) => {
+        calls.push(['credentials.resolve', ref]);
+        return { value: cfg.passphrase, source: 'file' };
+      },
+    },
   };
   return { ...base, ...overrides };
 }
