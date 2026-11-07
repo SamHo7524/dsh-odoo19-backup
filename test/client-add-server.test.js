@@ -24,6 +24,7 @@ const useState = (init) => {
   return [hooks[i], (v) => { hooks[i] = typeof v === 'function' ? v(hooks[i]) : v; }];
 };
 const useCallback = (fn) => fn;
+const useEffect = () => {}; // 替身：不执行副作用
 const useSyncExternalStore = (subscribe, getSnapshot) => getSnapshot();
 
 function expand(node) {
@@ -105,7 +106,7 @@ function loadClient({ configForms, lateService = false } = {}) {
   }
 
   const factoryResult = registered.factory((name) => {
-    if (name === 'react') return { createElement, useState, useCallback, useSyncExternalStore };
+    if (name === 'react') return { createElement, useState, useCallback, useEffect, useSyncExternalStore };
     throw new Error('unknown module ' + name);
   });
 
