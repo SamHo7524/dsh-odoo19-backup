@@ -39,12 +39,15 @@ function read(rel) {
   return readFileSync(join(ROOT, rel), 'utf8');
 }
 
-test('LOWER-1 运行时/发布文件里不再有大写标识 DSH-ODOO19-Backup', () => {
+test('LOWER-1 运行时/发布文件里不再有大写标识 DSH-ODOO19-Backup（CHANGELOG 历史记录除外）', () => {
   const files = walk(ROOT);
   const offenders = [];
   for (const f of files) {
+    const rel = relative(ROOT, f).replace(/\\/g, '/');
+    // CHANGELOG 里 0.1.0–0.1.6 的历史包名是真实记录，允许保留
+    if (/^CHANGELOG(\.zh-CN)?\.md$/.test(rel)) continue;
     const text = readFileSync(f, 'utf8');
-    if (text.includes(OLD)) offenders.push(relative(ROOT, f));
+    if (text.includes(OLD)) offenders.push(rel);
   }
   assert.deepEqual(offenders, [],
     '以下文件仍含大写标识：' + offenders.join(', '));
