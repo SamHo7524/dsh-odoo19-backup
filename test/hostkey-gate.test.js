@@ -24,6 +24,10 @@ function deps(overrides = {}) {
     detectFormat: async () => 'dsh-odoo',
     stat: async () => ({ size: 1 }),
     guardHostKey: async () => ({ ok: true, mode: 'pinned' }),
+    // v0.1.11：口令走 Credentials；本文件口令固定为 test-pw（cfg 内同值）
+    credentials: overrides.credentials ?? {
+      resolve: async () => ({ value: 'test-pw', source: 'file' }),
+    },
     ...overrides,
   };
 }
@@ -51,7 +55,9 @@ test('service.discover 未固定指纹时拒绝', async () => {
   assert.equal(d.calls.length, 0);
 });
 
-test('service.backup 未固定指纹时拒绝', async () => {
+test('service.backup 未固定指纹时拒绝（凭证已配置，指纹是下一个闸门）', async () => {
+  // v0.1.11：口令检查前置（不触达远端），指纹闸门紧随其后；
+  // 两者都是 fail-closed，任一失败都绝不触达远端。
   const d = deps({ guardHostKey: async () => ({ ok: false, error: { message: '尚未确认主机指纹' } }) });
   const svc = createService({ config: cfg(), deps: d });
   await assert.rejects(() => svc.backup('staging'), /指纹/);
