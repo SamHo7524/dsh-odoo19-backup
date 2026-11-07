@@ -160,6 +160,25 @@ test('CRED-15 service 必须能拿到 credentials：apply 内单独 inject 并�
   assert.match(svcCall[0], /credentials/, 'createService 的 deps 应包含 credentials');
 });
 
+test('CRED-16 service 暴露 attachCredentials：handler 可在请求时补挂凭证服务（自愈通道）', async () => {
+  // 防御第二层：即使独立 inject 的时序失败，web handler 每次请求都会收到
+  // webCtx.credentials，可在调用 backup/restore 前 attach 给 service。
+  const d = deps();
+  const svc = createService({ config: cfg(), deps: d }); // 不带 credentials → 模拟 inject 时序失败
+  await assert.rejects(() => svc.backup('staging'), /凭证服务不可用/);
+  // attach 后同一实例即可工作
+  const creds = makeCredentials({ value: 'late-pw' });
+  svc.attachCredentials(creds);
+  const r = await svc.backup('staging');
+  assert.equal(r.ok, true);
+  assert.equal(creds.calls.filter((c) => c[0] === 'resolve').length, 1);
+});
+
+test('CRED-17 index.js 在 backup/restore 路由前 attach handler 收到的 credentials', () => {
+  const hostSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  assert.match(hostSrc, /service\.attachCredentials\?\.\(/, 'handler 应把 webCtx.credentials 补挂给 service');
+});
+
 // ------------------------------------------------------- 前端契约
 
 test('CRED-11 备份 Tab 有口令输入（type=password），保存成功后清空输入', () => {
