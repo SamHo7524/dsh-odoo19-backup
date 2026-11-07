@@ -150,11 +150,24 @@ window.__ModuleLoader__.load({
               style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: T.bg2, padding: 8, borderRadius: 4, margin: '4px 0 8px' },
             }, scanList.map((f) => `${f.type} ${f.fingerprint}`).join('\n')),
 
-            // 阶段 2：给服务器所有者的材料
-            h('div', { style: { marginBottom: 6, fontWeight: 600 } }, '第 1 步 · 请服务器所有者在服务器上执行（授权本插件登录）'),
+            // 阶段 2：给服务器所有者的材料（授权本插件登录）
+            h('div', { style: { marginBottom: 6, fontWeight: 600 } }, '第 1 步 · 请服务器所有者授权本插件登录（客户端公钥认证）'),
             h('p', { style: { color: T.text2, marginTop: 0 } },
-              '把下面的「本机公钥」发给所有者，让他执行下列命令（幂等：不覆盖、不重复添加、自动查权）。'),
+              '两个方向的公钥不要混淆：上面的扫描值是「服务器主机公钥」（服务器证明自己是谁）；' +
+              '这里要发给所有者的是「本插件客户端公钥」（我们证明自己有私钥），两者方向相反、不是同一个东西。'),
+            h('input', {
+              value: state?.keyPath ?? '',
+              placeholder: '本机私钥路径（如 C:/Users/Ho/.ssh/id_ed25519）',
+              'aria-label': '本机私钥路径',
+              onChange: (e) => patch({ keyPath: e.target.value, pubkey: '', installCmd: '' }),
+              style: inputStyle,
+            }),
+            h('p', { style: { color: T.text2, fontSize: 12, marginTop: 0 } },
+              '填写本机私钥路径后，插件只读取同名 .pub 公钥展示给你；私钥绝不上传、绝不出现在任何接口响应里。'),
             h(Btn, { disabled: !!state?.busy, onClick: onLoadPubkey }, '读取本机公钥'),
+            !state?.keyPath && !state?.pubkey && h(Status, {
+              text: '请先在上方填写本机私钥路径，再点「读取本机公钥」；无需退出面板去别处编辑。', tone: 'warn',
+            }),
             state?.pubkey && h('pre', {
               style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: T.bg2, padding: 8, borderRadius: 4, margin: '6px 0' },
             }, state.pubkey),
@@ -303,9 +316,18 @@ window.__ModuleLoader__.load({
           });
 
           const doLoadPubkey = (s) => call(s.name, async (api) => {
+            const st = trust[s.name] ?? {};
+            // 优先用信任面板里填写的 keyPath；未填则内联提示，不调用 API。
+            const keyPath = (st.keyPath ?? s.keyPath ?? '').trim();
+            if (!keyPath) {
+              patchTrust(s.name, {
+                pubkeyErr: '请先在上方「本机私钥路径」填写路径，再点「读取本机公钥」；无需退出面板。',
+              });
+              return;
+            }
             patchTrust(s.name, { busy: true, pubkeyErr: '' });
             try {
-              const { publicKey } = await api('/client-pubkey', { keyPath: s.keyPath || '' });
+              const { publicKey } = await api('/client-pubkey', { keyPath });
               const line = publicKey.trim();
               const installCmd = [
                 'mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"',
@@ -315,7 +337,7 @@ window.__ModuleLoader__.load({
               ].join('\n');
               patchTrust(s.name, { pubkey: line, installCmd });
             } catch (e) {
-              patchTrust(s.name, { pubkeyErr: `读取公钥失败：${e?.message ?? String(e)}（请先设置 keyPath）` });
+              patchTrust(s.name, { pubkeyErr: `读取公钥失败：${e?.message ?? String(e)}（请检查上方私钥路径是否正确、且存在同名 .pub 文件）` });
             } finally { patchTrust(s.name, { busy: false }); }
           });
 
@@ -468,7 +490,10 @@ window.__ModuleLoader__.load({
                       }),
                     }, busy[s.name] ? '…' : t('server.test')),
                     h(Btn, {
-                      onClick: () => patchTrust(s.name, { open: !(trust[s.name]?.open) }),
+                      onClick: () => patchTrust(s.name, {
+                        open: !(trust[s.name]?.open),
+                        keyPath: trust[s.name]?.keyPath ?? s.keyPath ?? '',
+                      }),
                     }, '信任主机'),
                     h(Btn, {
                       onClick: () => {
