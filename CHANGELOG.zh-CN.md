@@ -8,6 +8,24 @@
 
 ---
 
+## [0.1.12] — 2026-11-07
+
+**scp 支持 sshConfigAlias，传输进度真实可见。**
+
+### 问题
+真机备份 `toogel`（靠 `sshConfigAlias: toogel-vault` 认证）SSH 命令能连上，但 scp 阶段 `Permission denied (publickey,password)`——`scpDownload`/`scpUpload` 只用 `keyPath`，而 `buildSshArgs` 早已支持别名。另外 563.8MB 传输期间进度卡在 `transferring 60%` 约 24 分钟。
+
+### 新增 / 修复
+- `lib/ssh.js`：`buildScpArgs(server, {direction, remotePath, localPath})`——别名机型用 `<alias>:<path>`，由 `~/.ssh/config` 提供 HostName/User/IdentityFile；`BatchMode=yes` 与 `StrictHostKeyChecking=yes` 始终保留。`parseScpProgress()`、`computeTransferPercent(localBytes, expectedBytes)`。
+- `backup.js` / `restore.js`：两处 scp 都改用 `buildScpArgs`，不再手工拼 `user@host`。
+- `backup.js` 的 `scpDownload`：进度以**轮询本地文件大小**对比远端 `outerSize` 为准（OpenSSH 的 `%` 进度条只在 tty 输出，我们 spawn 用 pipe 时静默）；百分比映射到 transferring 阶段 60–80%，显示「正在下载备份单元 N%」；成功/失败/超时均清理定时器。
+
+### 安全
+- 不引入密码认证、不 `accept-new`；`guardHostKey`、fail-closed、R10、加密、恢复状态机全部未改。别名信任仍由用户自己的 `~/.ssh/config` 承担。
+- 新增 12 条测试（SCP-1..12）；全套 **293 / 293**。
+
+---
+
 ## [0.1.11] — 2026-11-07
 
 **备份加密口令迁移到 DSH 官方 Credentials 服务。**
