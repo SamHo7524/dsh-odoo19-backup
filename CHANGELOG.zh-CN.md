@@ -8,6 +8,25 @@
 
 ---
 
+## [0.1.11] — 2026-11-07
+
+**备份加密口令迁移到 DSH 官方 Credentials 服务。**
+
+### 问题
+「开始备份」被拒「未配置加密口令…请先在插件设置页填写」——但该入口**不存在**：自定义卡片没有口令输入框，原生设置页只渲染 `.volatile()` 字段（仅 `servers`），口令无处可填。
+
+### 新增
+- `lib/service.js`：`requirePassphrase()` 每次执行时从注入的 `credentials` 服务解析 `ODOO_BACKUP_PASSPHRASE`（不缓存）；备份与恢复共用；调用方 `opts.passphrase` 不再静默覆盖统一凭证；遗留 `config.passphrase` 值被忽略。
+- `index.js`：`POST /passphrase-status`（只回 `{configured, source}`，绝不回值）、`POST /set-passphrase`（空值拒绝、响应不回显）、`POST /unset-passphrase`（删除后重读状态）；注入扩展为 `['webServer','settings','credentials']`。
+- `client.js`：备份 Tab 口令区块（状态行 + `type="password"` 输入 + 保存/更新/清除），`useEffect` 加载状态；**成功后才清空输入**，失败保留并报错；恢复 Tab 显示共用状态；离线保管警告（口令丢失则历史备份无法解密）。
+
+### 安全
+- 口令不进 `cordis.patch.yml`、不出现在 `/servers`、状态响应或日志（CRED-8/13/14 断言）。DSH Credentials 存储为 `$DSH_HOME/.credentials.yaml`（0600/0700、所有者校验）——明确接受为「权限保护的明文存储」，**不是加密保险库**。
+- R10 强制加密、加密格式、恢复状态机、`guardHostKey`、`volatile` 机制不变。指纹闸门仍在任何远端访问前拒绝；口令检查现在最先执行（不触达任何远端）。
+- 新增 14 条测试（CRED-1..14）；全套 **278 / 278**。
+
+---
+
 ## [0.1.10] — 2026-11-07
 
 **本机私钥路径改为文件浏览器选择，不再需要自己输入路径。**
