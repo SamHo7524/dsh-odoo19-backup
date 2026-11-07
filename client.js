@@ -89,6 +89,109 @@ window.__ModuleLoader__.load({
           return dict[k] ?? k;
         };
 
+        // ---- v0.1.8 信任流程纯函数（与 lib/trust.js 同语义，前端即时反馈） ----
+        const normFp = (v) => String(v ?? '').trim().replace(/^SHA256:/i, '').trim();
+        const FINGERPRINT_CMD = 'ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub';
+        const inputStyle = {
+          display: 'block', width: '100%', boxSizing: 'border-box',
+          marginBottom: 6, padding: '6px 8px', fontSize: 13,
+          color: T.text, background: T.bg1,
+          border: `1px solid ${T.border}`, borderRadius: 4,
+        };
+        // 主机身份状态与登录认证状态必须分开显示，不能混为一谈。
+        const hostState = (s, scan) => {
+          if (s.sshConfigAlias) return { text: '已信任（SSH 配置别名接管）', tone: 'ok' };
+          if (!s.pinnedFingerprint) return { text: '等待所有者核验指纹', tone: 'warn' };
+          if (scan?.fingerprints?.length
+            && !scan.fingerprints.some((f) => normFp(f.fingerprint) === normFp(s.pinnedFingerprint))) {
+            return { text: '主机指纹发生变化，需重新核验', tone: 'error' };
+          }
+          return { text: '已信任（指纹已固化）', tone: 'ok' };
+        };
+        const authState = (s, lastTest) => {
+          if (lastTest && /err:/i.test(lastTest)) return { text: '认证失败：检查 keyPath / authorized_keys / 用户名', tone: 'error' };
+          if (lastTest && /^ok:/i.test(lastTest)) return { text: '连接成功', tone: 'ok' };
+          if (!s.keyPath && !s.sshConfigAlias) return { text: '未配置公钥（需设置 keyPath 或别名）', tone: 'warn' };
+          return { text: '等待服务器授权公钥', tone: 'warn' };
+        };
+
+        /**
+         * v0.1.8 信任主机面板。
+         * 四阶段：扫描 → 展示材料/命令 → 所有者执行并回传 → 核验 → 保存。
+         * 安全：不自动信任扫描值；回传值必须由用户从独立可信渠道粘贴；
+         * 只有「扫描值 == 回传值 且 公钥类型一致」才启用确认按钮。
+         */
+        function TrustHostPanel({ server, state, patch, onScan, onLoadPubkey, onConfirm, onClose }) {
+          const td = {
+            padding: 12, marginTop: 8, border: `1px solid ${T.borderStrong}`,
+            borderRadius: 6, background: T.bg1, fontSize: 13,
+          };
+          const scan = state?.scan;
+          const answer = String(state?.answerFp ?? '').trim();
+          const answerType = String(state?.answerType ?? '').trim();
+          const scanList = scan?.fingerprints ?? [];
+          const matches = scanList.some((f) => normFp(f.fingerprint) === normFp(answer))
+            && (!answerType || scanList.some((f) => normFp(f.fingerprint) === normFp(answer) && f.type === answerType));
+          const canConfirm = !!scan?.ok && !!answer && matches && !state?.busy;
+
+          return h('div', { style: td },
+            h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 8 } },
+              `信任主机：${server.name}（${server.user}@${server.host}:${server.port ?? 22}）`),
+            h('p', { style: { color: T.text2, marginTop: 0 } },
+              '这是两件独立的事：① 主机指纹 = 服务器证明自己是谁；② 公钥认证 = 服务器允许本插件登录。请让服务器所有者分别完成。'),
+
+            // 阶段 1：扫描
+            h('div', { style: { marginBottom: 8 } },
+              h(Btn, { disabled: !!state?.busy, onClick: onScan }, state?.busy ? '…' : '重新扫描'),
+              h('span', { style: { marginLeft: 8, color: T.text2 } },
+                scan?.ok ? `扫描到 ${scanList.length} 个主机公钥` : (scan ? `扫描失败：${scan.error?.message ?? '未知'}` : '尚未扫描')),
+            ),
+            scan?.ok && h('pre', {
+              style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: T.bg2, padding: 8, borderRadius: 4, margin: '4px 0 8px' },
+            }, scanList.map((f) => `${f.type} ${f.fingerprint}`).join('\n')),
+
+            // 阶段 2：给服务器所有者的材料
+            h('div', { style: { marginBottom: 6, fontWeight: 600 } }, '第 1 步 · 请服务器所有者在服务器上执行（授权本插件登录）'),
+            h('p', { style: { color: T.text2, marginTop: 0 } },
+              '把下面的「本机公钥」发给所有者，让他执行下列命令（幂等：不覆盖、不重复添加、自动查权）。'),
+            h(Btn, { disabled: !!state?.busy, onClick: onLoadPubkey }, '读取本机公钥'),
+            state?.pubkey && h('pre', {
+              style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: T.bg2, padding: 8, borderRadius: 4, margin: '6px 0' },
+            }, state.pubkey),
+            state?.pubkeyErr && h(Status, { text: state.pubkeyErr, tone: 'error' }),
+            state?.pubkey && h('pre', {
+              style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: T.bg2, padding: 8, borderRadius: 4, margin: '6px 0' },
+            }, state.installCmd || ''),
+
+            // 阶段 3：所有者回传指纹
+            h('div', { style: { margin: '10px 0 6px', fontWeight: 600 } }, '第 2 步 · 请服务器所有者核实服务器身份并回传指纹'),
+            h('p', { style: { color: T.text2, marginTop: 0 } },
+              '所有者在服务器上执行下面命令，把完整输出通过独立可信渠道发回给你（不要直接复制上面的扫描值）：'),
+            h('pre', { style: { background: T.bg2, padding: 8, borderRadius: 4, margin: '4px 0 8px' } }, FINGERPRINT_CMD),
+            h('input', {
+              value: state?.answerFp ?? '', placeholder: '粘贴服务器所有者回传的 SHA256:... 值（不要复制扫描结果）',
+              'aria-label': '服务器所有者回传的指纹',
+              onChange: (e) => patch({ answerFp: e.target.value }), style: inputStyle,
+            }),
+            h('input', {
+              value: state?.answerType ?? '', placeholder: '公钥类型（如 ssh-ed25519，与扫描结果核对）',
+              'aria-label': '回传公钥类型',
+              onChange: (e) => patch({ answerType: e.target.value }), style: inputStyle,
+            }),
+            !canConfirm && answer && h(Status, {
+              text: '回传值与扫描值或公钥类型不一致，禁止确认信任（防中间人攻击）', tone: 'error',
+            }),
+
+            // 阶段 4：确认
+            h('div', { style: { display: 'flex', gap: 8, marginTop: 6 } },
+              h(Btn, { disabled: !canConfirm, onClick: onConfirm }, '确认信任并保存'),
+              h(Btn, { onClick: onClose }, '关闭'),
+            ),
+            h('p', { style: { color: T.text2, fontSize: 12, marginBottom: 0 } },
+              '确认只写入主机指纹，不会改动私钥路径或服务器其他配置；随后请点「测试连接」验证登录认证。'),
+          );
+        }
+
         function OdooBackupPanel({ scope }) {
           const [tab, setTab] = useState('servers');
           const [status, setStatus] = useState({});
@@ -100,14 +203,13 @@ window.__ModuleLoader__.load({
             name: '', host: '', user: 'root', keyPath: '',
             sshConfigAlias: '', pinnedFingerprint: '',
           });
+          // v0.1.8：编辑已有服务器（null = 新增，name = 正在编辑的服务器）
+          const [editingName, setEditingName] = useState(null);
+          // v0.1.8：信任面板状态，按服务器名隔离
+          // { scan, answerFp, answerType, pubkey, pubkeyErr, expected:{host,port,user}, phase }
+          const [trust, setTrust] = useState({});
           // 恢复包路径：同样不用 window.prompt（Electron 不实现）。
           const [restorePath, setRestorePath] = useState({});
-          const inputStyle = {
-            display: 'block', width: '100%', boxSizing: 'border-box',
-            marginBottom: 6, padding: '6px 8px', fontSize: 13,
-            color: T.text, background: T.bg1,
-            border: `1px solid ${T.border}`, borderRadius: 4,
-          };
 
           // 配置服务缺席（或不可用）时，首次渲染就给出可见提示，绝不静默空白。
           const scopeReady = !!(scope && typeof scope.getSnapshot === 'function' && typeof scope.set === 'function');
@@ -185,6 +287,55 @@ window.__ModuleLoader__.load({
             }
           }, [api, setOne]);
 
+          // ---- v0.1.8 信任面板回调（全部走既有 /odoo-backup/* 路由） ----
+          const patchTrust = (name, delta) =>
+            setTrust((m) => ({ ...m, [name]: { ...(m[name] ?? {}), ...delta } }));
+
+          const doScan = (s) => call(s.name, async (api) => {
+            patchTrust(s.name, { busy: true });
+            try {
+              const { result } = await api('/fingerprint', { server: s.name });
+              patchTrust(s.name, {
+                scan: result,
+                expected: { host: s.host, port: s.port ?? 22, user: s.user ?? 'root' },
+              });
+            } finally { patchTrust(s.name, { busy: false }); }
+          });
+
+          const doLoadPubkey = (s) => call(s.name, async (api) => {
+            patchTrust(s.name, { busy: true, pubkeyErr: '' });
+            try {
+              const { publicKey } = await api('/client-pubkey', { keyPath: s.keyPath || '' });
+              const line = publicKey.trim();
+              const installCmd = [
+                'mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"',
+                `grep -qF '${line}' "$HOME/.ssh/authorized_keys" 2>/dev/null || echo '${line}' >> "$HOME/.ssh/authorized_keys"`,
+                'chmod 600 "$HOME/.ssh/authorized_keys"',
+                `if grep -qF '${line}' "$HOME/.ssh/authorized_keys"; then echo 'PUBKEY_INSTALLED_OK'; else echo 'PUBKEY_INSTALL_FAILED'; fi`,
+              ].join('\n');
+              patchTrust(s.name, { pubkey: line, installCmd });
+            } catch (e) {
+              patchTrust(s.name, { pubkeyErr: `读取公钥失败：${e?.message ?? String(e)}（请先设置 keyPath）` });
+            } finally { patchTrust(s.name, { busy: false }); }
+          });
+
+          const doConfirmTrust = (s) => call(s.name, async (api) => {
+            const st = trust[s.name] ?? {};
+            patchTrust(s.name, { busy: true });
+            try {
+              const { result } = await api('/trust-host', {
+                server: s.name,
+                answerFingerprint: st.answerFp,
+                answerType: st.answerType,
+                expectedHost: st.expected?.host,
+                expectedPort: st.expected?.port,
+                expectedUser: st.expected?.user,
+              });
+              patchTrust(s.name, { open: false });
+              setOne(s.name, `主机身份已确认并保存（${result?.servers?.length ?? 0} 台服务器配置保持）。请点「测试连接」验证登录认证。`);
+            } finally { patchTrust(s.name, { busy: false }); }
+          });
+
           return h('div', { style: { padding: 16, fontFamily: 'inherit', color: T.text } },
             h('h2', { style: { margin: '0 0 4px', fontSize: 18 } }, 'dsh-odoo19-backup'),
             h('p', { style: { margin: '0 0 16px', color: T.text2, fontSize: 13 } },
@@ -203,7 +354,11 @@ window.__ModuleLoader__.load({
               // 不能用 window.prompt：Electron 不实现它（恒返回 null），
               // 点了会静默无反应。改为内联表单。
               !adding && h(Btn, {
-                onClick: () => { setAdding(true); setSaveErr(''); },
+                onClick: () => {
+                  setEditingName(null);
+                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '' });
+                  setAdding(true); setSaveErr('');
+                },
               }, t('server.add')),
               adding && h('div', {
                 style: {
@@ -211,7 +366,8 @@ window.__ModuleLoader__.load({
                   borderRadius: 6, background: T.bg2,
                 },
               },
-                h('div', { style: { fontSize: 13, marginBottom: 8 } }, '新增服务器'),
+                h('div', { style: { fontSize: 13, marginBottom: 8 } },
+                  editingName ? `编辑服务器：${editingName}` : '新增服务器'),
                 h('input', {
                   value: draft.name, placeholder: '服务器名称（唯一）', 'aria-label': '服务器名称',
                   onChange: (e) => setDraft({ ...draft, name: e.target.value }),
@@ -250,22 +406,32 @@ window.__ModuleLoader__.load({
                   h(Btn, {
                     disabled: !draft.name.trim() || !draft.host.trim(),
                     onClick: async () => {
-                      const name = draft.name.trim();
+                      const name = (editingName || draft.name).trim();
                       const host = draft.host.trim();
                       if (!name || !host) { setSaveErr('名称与主机地址必填'); return; }
-                      if (servers.some((s) => s.name === name)) { setSaveErr(`服务器名称已存在：${name}`); return; }
-                      await saveServers([...servers, {
-                        name, host, port: 22,
+                      if (!editingName && servers.some((s) => s.name === name)) {
+                        setSaveErr(`服务器名称已存在：${name}`); return;
+                      }
+                      const existing = editingName ? servers.find((s) => s.name === editingName) : null;
+                      const nextServer = {
+                        name, host, port: existing?.port ?? 22,
                         user: draft.user.trim() || 'root',
                         keyPath: draft.keyPath.trim(),
                         sshConfigAlias: draft.sshConfigAlias.trim(),
-                        pinnedFingerprint: draft.pinnedFingerprint.trim(),
-                      }]);
+                        // 编辑时保留已固化指纹（除非用户明确清空/修改），避免误删信任
+                        pinnedFingerprint: draft.pinnedFingerprint.trim()
+                          || (existing?.pinnedFingerprint ?? ''),
+                      };
+                      const next = editingName
+                        ? servers.map((s) => (s.name === editingName ? nextServer : s))
+                        : [...servers, nextServer];
+                      await saveServers(next);
                       setDraft({
                         name: '', host: '', user: 'root', keyPath: '',
                         sshConfigAlias: '', pinnedFingerprint: '',
                       });
                       setAdding(false);
+                      setEditingName(null);
                     },
                   }, '保存'),
                   h(Btn, {
@@ -287,8 +453,10 @@ window.__ModuleLoader__.load({
                     h('strong', null, s.name),
                     h('span', { style: { marginLeft: 8, color: T.text2, fontSize: 12 } },
                       `${s.user}@${s.host}:${s.port ?? 22}`),
+                    h('div', { style: { marginTop: 4, fontSize: 12, color: T.text2 } },
+                      `主机身份：${hostState(s, trust[s.name]?.scan).text} ｜ 登录认证：${authState(s, status[s.name]).text}`),
                   ),
-                  h('div', { style: { display: 'flex', gap: 6 } },
+                  h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
                     h(Btn, {
                       disabled: !!busy[s.name],
                       onClick: () => call(s.name, async (api) => {
@@ -300,23 +468,37 @@ window.__ModuleLoader__.load({
                       }),
                     }, busy[s.name] ? '…' : t('server.test')),
                     h(Btn, {
+                      onClick: () => patchTrust(s.name, { open: !(trust[s.name]?.open) }),
+                    }, '信任主机'),
+                    h(Btn, {
+                      onClick: () => {
+                        setEditingName(s.name);
+                        setDraft({
+                          name: s.name, host: s.host ?? '', user: s.user ?? 'root',
+                          keyPath: s.keyPath ?? '', sshConfigAlias: s.sshConfigAlias ?? '',
+                          pinnedFingerprint: s.pinnedFingerprint ?? '',
+                        });
+                        setAdding(true); setSaveErr('');
+                      },
+                    }, '编辑'),
+                    h(Btn, {
                       disabled: !!busy[s.name],
-                      onClick: () => call(s.name, async (api) => {
-                        setOne(s.name, '扫描主机指纹中...');
-                        const { result } = await api('/fingerprint', { server: s.name });
-                        const list = result?.fingerprints ?? [];
-                        setOne(s.name, list.length
-                          ? `指纹（请人工核对后填入「已确认主机指纹」字段）：\n`
-                            + list.map((f) => `${f.type} ${f.fingerprint}`).join('\n')
-                          : `扫描失败：${result?.error?.message ?? '未取得指纹'}`);
-                      }),
-                    }, busy[s.name] ? '…' : '扫描指纹'),
+                      onClick: () => doScan(s),
+                    }, busy[s.name] ? '…' : '重新扫描'),
                     h(Btn, {
                       tone: 'danger',
                       onClick: async () => { await saveServers(servers.filter((_, i) => i !== idx)); },
                     }, t('task.delete')),
                   ),
                 ),
+                trust[s.name]?.open && h(TrustHostPanel, {
+                  server: s, state: trust[s.name],
+                  patch: (delta) => patchTrust(s.name, delta),
+                  onScan: () => doScan(s),
+                  onLoadPubkey: () => doLoadPubkey(s),
+                  onConfirm: () => doConfirmTrust(s),
+                  onClose: () => patchTrust(s.name, { open: false }),
+                }),
                 h(Status, { text: status[s.name] }),
               )),
             ),
