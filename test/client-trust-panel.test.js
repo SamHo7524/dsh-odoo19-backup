@@ -11,12 +11,16 @@ function createElement(type, props, ...children) { return { type, props: props ?
 let hooks = []; let cursor = 0;
 const useState = (init) => { const i = cursor++; if (i >= hooks.length) hooks[i] = typeof init === 'function' ? init() : init; return [hooks[i], (v) => { hooks[i] = typeof v === 'function' ? v(hooks[i]) : v; }]; };
 const useCallback = (fn) => fn;
+const useEffect = () => {}; // 替身：不执行副作用（真实 React 会执行）
 const useSyncExternalStore = (_s, getSnapshot) => getSnapshot();
 function expand(node) {
   if (node == null || node === false) return node;
   if (Array.isArray(node)) return node.map(expand);
   if (typeof node === 'string' || typeof node === 'number') return node;
-  if (typeof node.type === 'function') return expand(node.type({ ...node.props, children: node.children }));
+  if (typeof node.type === 'function') {
+    try { return expand(node.type({ ...node.props, children: node.children })); }
+    catch (e) { return { type: 'THREW', props: {}, children: [String(e && e.message).slice(0, 200)] }; }
+  }
   return { ...node, children: expand(node.children ?? []) };
 }
 function findAll(node, pred, out = []) {
@@ -47,7 +51,7 @@ function loadClient() {
   global.setTimeout = () => 0; global.clearTimeout = () => {};
   try { new Function('window', 'fetch', src)(win, async () => ({ json: async () => ({ ok: true }) })); }
   finally { global.setTimeout = st; global.clearTimeout = ct; }
-  const f = registered.factory((n) => { if (n === 'react') return { createElement, useState, useCallback, useSyncExternalStore }; throw new Error('unknown ' + n); });
+  const f = registered.factory((n) => { if (n === 'react') return { createElement, useState, useCallback, useEffect, useSyncExternalStore }; throw new Error('unknown ' + n); });
   let reg = null;
   const scope = makeScope(SERVERS);
   f.apply({
@@ -73,6 +77,9 @@ test('UI-2 服务器行有「编辑」与「重新扫描」入口', () => {
   const reg = loadClient();
   const tree = mount(reg.comp(reg.opts.inject?.() ?? {}));
   const all = findAll(tree, (n) => n.type === 'button').map((b) => texts(b).join(''));
+  if (!all.some((t) => t.includes('编辑'))) {
+    console.log('[UI-2 DEBUG] buttons:', JSON.stringify(all), 'treeText:', JSON.stringify(texts(tree).join('|').slice(0, 400)));
+  }
   assert.ok(all.some((t) => t.includes('编辑')), '缺编辑入口');
   assert.ok(all.some((t) => t.includes('重新扫描')), '缺重新扫描入口');
 });
