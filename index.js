@@ -191,7 +191,7 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
     if (route === '/client-pubkey') {
       // 只读取 .pub 公钥文件；绝不读取、返回或记录私钥内容。
       const kp = String(body.keyPath ?? '').trim();
-      if (!kp) throw new Error('未配置 keyPath（本地私钥路径），无法读取对应公钥；请先在服务器表单填写私钥路径');
+      if (!kp) throw new Error('未配置 keyPath（本地私钥路径），无法读取对应公钥；请先在信任面板上方的「本机私钥路径」输入框填写路径，无需退出面板到别处编辑。');
       const pubPath = publicKeyPathOf(kp);
       const reader = readPublicKey ?? ((p) => readFile(p, 'utf8'));
       const text = String(await reader(pubPath) ?? '').trim();
