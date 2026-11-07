@@ -115,10 +115,10 @@ test('UI-7 面板明确要求「粘贴服务器所有者回传值」，不允许
 
 // ---------------------------------------------------------------- v0.1.9 方案 B
 
-test('UI-8 信任面板内直接提供「本机私钥路径」输入框（不用退出面板去点编辑）', () => {
-  // 面板默认收起，用源码级静态断言验证输入框存在（React 替身不模拟展开）
-  assert.match(src, /aria-label:\s*'本机私钥路径'|placeholder:\s*'本机私钥路径/,
-    '信任面板内必须有 keyPath 输入框，否则以后每台新主机都会卡在「读取本机公钥」');
+test('UI-8 信任面板内直接提供「本机私钥路径」入口（不用退出面板去点编辑）', () => {
+  // v0.1.10 起改为文件浏览器选择 + 只读路径显示；仍保留 aria-label 与面板内入口
+  assert.match(src, /['"]aria-label['"]:\s*'本机私钥路径'/, '面板内应有路径显示框');
+  assert.match(src, /选择私钥文件|手动输入路径/, '面板内应有文件选择或降级入口');
 });
 
 test('UI-9 面板把 keyPath 作为信任状态的一部分，读取公钥使用该面板值', () => {
@@ -137,9 +137,9 @@ test('UI-10 面板文案明确区分两个方向的公钥（服务器主机公�
   assert.match(src, /方向|不是同一|两件独立/, '必须点明两者方向不同、不是同一个东西');
 });
 
-test('UI-11 未配置 keyPath 时，面板内联提示可填路径，不指向「服务器表单」外部', () => {
-  assert.match(src, /请先.*填写.*私钥路径|在上方填写.*私钥路径/,
-    '错误提示应引导在面板内填写，而不是让用户猜去别处编辑');
+test('UI-11 未配置 keyPath 时，面板内联提示用文件浏览器选择，不指向「服务器表单」外部', () => {
+  assert.match(src, /请先点「选择私钥文件」|选择本机私钥/,
+    '错误提示应引导点文件选择按钮，而不是让用户手写路径或去别处编辑');
   assert.ok(!/请先设置 keyPath（请先设置 keyPath）/.test(src));
 });
 
@@ -151,4 +151,38 @@ test('UI-12 方案 B 不改动安全逻辑：guardHostKey 三放行与 fail-clos
   assert.match(ssh, /fail-closed|绝不/);
   assert.match(idx, /route === '\/trust-host'/);
   assert.match(idx, /confirmTrust\(/);
+});
+
+// ---------------------------------------------------------------- v0.1.10 文件浏览器选择
+
+test('PICK-1 信任面板提供「选择私钥文件」文件浏览器入口（input type=file），不再要求手输路径', () => {
+  assert.match(src, /type:\s*'file'/, '必须有文件选择输入框');
+  assert.match(src, /选择私钥文件|浏览.*私钥|选择.*文件/, '必须有文件选择按钮/标签');
+});
+
+test('PICK-2 选中文件后用 __DSH_HOST_PATHS__.pathFor(file) 取真实绝对路径', () => {
+  assert.match(src, /__DSH_HOST_PATHS__/, '必须调用桌面端官方桥');
+  assert.match(src, /pathFor\(/, '必须用 webUtils.getPathForFile 的封装取真实路径');
+});
+
+test('PICK-3 只取路径，绝不读取/上传私钥文件内容', () => {
+  // 不允许 FileReader / readAsText / 把 File 对象塞进 API body
+  assert.ok(!/FileReader|readAsText|readAsArrayBuffer/.test(src), '不得读取私钥内容');
+  assert.ok(!/body:\s*JSON\.stringify\(\{\s*file:/.test(src), '不得把文件对象放入请求体');
+});
+
+test('PICK-4 桌面端桥不可用时降级：提示手动输入，不崩溃', () => {
+  assert.match(src, /手动输入|浏览器.*不支持|无法获取.*路径/,
+    '非桌面环境应给出可操作的降级提示');
+});
+
+test('PICK-5 选中的真实路径回写面板 keyPath 状态，供「读取本机公钥」使用', () => {
+  assert.match(src, /pathFor[\s\S]{0,400}patch\(\{\s*keyPath/,
+    'pathFor 的结果必须写回 keyPath 状态');
+});
+
+test('PICK-6 安全逻辑仍不变（回归护栏）', () => {
+  const ssh = readFileSync(new URL('../lib/ssh.js', import.meta.url), 'utf8');
+  assert.match(ssh, /if \(server.sshConfigAlias\)/);
+  assert.match(ssh, /if \(!server.pinnedFingerprint\)/);
 });
