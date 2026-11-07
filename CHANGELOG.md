@@ -8,6 +8,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.11] — 2026-11-07
+
+**Backup passphrase moves to the official DSH Credentials service.**
+
+### Problem
+"开始备份" was refused with "未配置加密口令…请先在插件设置页填写" — but that entry point **did not exist**: the custom card had no passphrase input, and the native settings page only renders `.volatile()` fields (`servers` only), so the passphrase was unfillable anywhere.
+
+### Added
+- `lib/service.js`: `requirePassphrase()` resolves `ODOO_BACKUP_PASSPHRASE` from the injected `credentials` service **on every execution** (no caching); backup and restore both use it; caller-supplied `opts.passphrase` no longer silently overrides the unified credential; leftover `config.passphrase` values are ignored.
+- `index.js`: `POST /passphrase-status` (returns `{configured, source}` only — never the value), `POST /set-passphrase` (empty refused; response never echoes the value), `POST /unset-passphrase` (re-reads status after delete); `ctx.inject(['webServer','settings','credentials'])`.
+- `client.js`: backup tab passphrase block (status line + `type="password"` input + 保存/更新/清除), loaded via `useEffect`; success clears the input only after the credential service confirms; failure keeps the input and shows the error; restore tab shows the shared status; offline-custody warning (losing the passphrase makes historical backups undecryptable).
+
+### Security
+- Passphrase never enters `cordis.patch.yml`, `/servers`, any status response, or logs (CRED-8/13/14 assertions). DSH Credentials store is `$DSH_HOME/.credentials.yaml` at `0600/0700` with owner-only checks — accepted explicitly as a permission-protected plaintext store, **not** an encrypted vault.
+- R10 mandatory encryption, the encryption format, the restore state machine, `guardHostKey` and the `volatile` mechanism are unchanged. Fingerprint gate still refuses before any remote access; the passphrase check now runs first (it touches nothing remote).
+- 14 new tests (CRED-1..14); **278 / 278** total.
+
+---
+
 ## [0.1.10] — 2026-11-07
 
 **Pick the private key with a file browser instead of typing its path.**
