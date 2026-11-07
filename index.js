@@ -75,12 +75,22 @@ export function apply(ctx, config) {
     config.localBackupDir,
   );
 
+  // v0.1.11：官方凭证服务（备份加密口令）。service 创建在 web inject 之外，
+  // 因此 credentials 必须独立 inject 后经 refs 透传给 service（CRED-15）。
+  const credsRef = { current: undefined };
+  ctx.inject(['credentials'], (cctx) => { credsRef.current = cctx.credentials; });
+
   // 一个操作，两个调用者：service 是唯一实现，工具与 UI 都走它。
   // 显式注入 scanHostKey / pinHostKey：让 fingerprint / pin 与既有操作共用同一
   // service，测试也能通过 deps 覆盖，不引入第二套逻辑。
+  // credentials 用 getter 透传：inject 完成后 requirePassphrase 动态拿到服务。
   const service = createService({
     config: { ...config, get servers() { return serversRef.current; } },
-    deps: { scanHostKey, pinHostKey },
+    deps: {
+      scanHostKey,
+      pinHostKey,
+      get credentials() { return credsRef.current; },
+    },
   });
   const tokenStore = createTokenStore();
 
