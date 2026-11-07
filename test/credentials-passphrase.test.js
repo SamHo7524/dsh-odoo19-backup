@@ -149,6 +149,17 @@ test('CRED-10 凭证缺位时 credentials 服务本身必须存在（注入契�
   assert.match(hostSrc, /inject\(\['webServer',\s*'settings',\s*'credentials'\]/, 'apply 应注入 credentials 服务');
 });
 
+test('CRED-15 service 必须能拿到 credentials：apply 内单独 inject 并透传给 createService', () => {
+  // 真机缺陷回归（v0.1.11 首装后发现）：service 创建在 web inject 回调之外，
+  // ctx.credentials 必须通过独立 inject 传入，否则备份报「凭证服务不可用」。
+  const hostSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  assert.match(hostSrc, /inject\(\['credentials'\]/, 'apply 应有独立的 credentials inject');
+  // createService 的 deps 必须引用该 inject 的结果（间接透传）
+  const svcCall = hostSrc.match(/createService\(\{[\s\S]{0,400}?\}\);/);
+  assert.ok(svcCall, 'createService 调用存在');
+  assert.match(svcCall[0], /credentials/, 'createService 的 deps 应包含 credentials');
+});
+
 // ------------------------------------------------------- 前端契约
 
 test('CRED-11 备份 Tab 有口令输入（type=password），保存成功后清空输入', () => {
