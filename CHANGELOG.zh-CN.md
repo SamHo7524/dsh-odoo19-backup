@@ -8,6 +8,30 @@
 
 ---
 
+## [0.1.8] — 2026-11-07
+
+**SSH 主机安全接入体验完善** —— 首次主机信任与公钥认证在界面内成为两套清晰分离、可自助完成的流程。
+
+### 新增
+- `lib/trust.js`：`normalizeFp`、`verifyFingerprint`（SHA256 + 公钥类型双重比对）、`confirmTrust`（重新核对 host/port/user 与扫描时一致、拒绝复制扫描值自证）、`applyTrust`（**只**写 `pinnedFingerprint`）、`isTrustValid`（信任不迁移到变更后的目标）、`validatePublicKey`、`publicKeyPathOf`（只构造 `.pub` 路径）、`fingerprintCommand`，以及**幂等**的 `authorizedKeysCommand`（不覆盖、去重、chmod 700/600、执行后自查）。
+- Host 路由：`POST /client-pubkey`（只从 `keyPath + '.pub'` 读公钥，**绝不读取/返回/记录私钥**）、`POST /trust-host`（重新扫描 → 身份重核 → 指纹/类型比对 → 只更新 `pinnedFingerprint`）、`/servers` 增量返回信任字段。
+- Client `TrustHostPanel`：每台服务器「信任主机 / 编辑 / 重新扫描」按钮，分离显示**主机身份**与**登录认证**状态，给出本机公钥、幂等安装命令、`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`、所有者回传指纹输入框，且仅回传值与扫描值一致时才启用确认。
+
+### 修复
+- 删除误导性的 `action=pin` 指引：`pin` 只写 `known_hosts`，从不写 `pinnedFingerprint`，照做永远无法建立信任。拒绝文案现明确区分主机身份核验与登录认证。
+- `classifySshError` 对认证失败 / 主机密钥失败 / 超时 / 拒绝连接分别给出提示。
+
+### 安全
+- 主机指纹核验与客户端公钥认证保持**两套独立机制**；不自动信任、不以 `known_hosts` 为信任依据、任何 API 响应与日志都不含私钥。
+- `guardHostKey` 三条放行路径、fail-closed、`requireTrusted`、`volatile` 配置机制**均未改动**。
+- 新增 27 条测试（TRUST-1..14、API-1..6、UI-1..7）；全套 **253 / 253**。
+- `/pin` 路由保留兼容旧 Agent 调用，但不再从界面暴露。
+
+### 真机验证
+- 正确指纹 + 正确公钥 → `/test` 200 `ok=true`；错误指纹 → 400「主机密钥与固化值不一致，可能被中间人攻击」；错误/未授权公钥 → `Permission denied` / `Identity file not accessible`（认证错误，非指纹错误）；既有 `toogel`（sshConfigAlias）仍 200 `ok=true`。
+
+---
+
 ## [0.1.7] — 2026-11-06
 
 **首个公开 GitHub 版本。全量小写，可直接从 GitHub 安装。**
