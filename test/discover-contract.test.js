@@ -16,6 +16,11 @@ function deps(overrides = {}) {
     runRestore: async () => { calls.push(['runRestore']); return { ok: true }; },
     detectFormat: async () => 'dsh-odoo',
     stat: async () => ({ size: 1 }),
+        credentials: overrides.credentials ?? {
+      resolve: async () => (overrides.credentialsValue ?? cfg?.passphrase
+        ? { value: overrides.credentialsValue ?? cfg?.passphrase, source: 'file' }
+        : undefined),
+    },
     ...overrides,
   };
 }
