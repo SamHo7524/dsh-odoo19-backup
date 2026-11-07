@@ -3,7 +3,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useState, useCallback, useSyncExternalStore } = React;
+    const { useState, useCallback, useEffect, useSyncExternalStore } = React;
     const pkgName = '@local/dsh-odoo19-backup';
     // useSyncExternalStore 要求稳定引用：这两个常量必须定义在模块级，
     // 绝不能在 getSnapshot/subscribe 里现造新对象/新函数。
@@ -289,8 +289,27 @@ window.__ModuleLoader__.load({
           // v0.1.8：信任面板状态，按服务器名隔离
           // { scan, answerFp, answerType, pubkey, pubkeyErr, expected:{host,port,user}, phase }
           const [trust, setTrust] = useState({});
-          // 恢复包路径：同样不用 window.prompt（Electron 不实现）。
-          const [restorePath, setRestorePath] = useState({});
+          const [restorePath, setRestorePath] = useState({}); // 恢复包路径：同样不用 window.prompt（Electron 不实现）。
+          // v0.1.11：备份加密口令（存官方 Credentials，不进插件配置）。
+          // 状态只含 configured；口令值只在输入框里，保存成功后立即清空。
+          const [passState, setPassState] = useState({ loaded: false, configured: false, input: '', busy: false, err: '', ok: '' });
+          const loadPassStatus = useCallback(async (api) => {
+            try {
+              const { configured } = await api('/passphrase-status');
+              setPassState((s) => ({ ...s, loaded: true, configured: Boolean(configured), err: '' }));
+            } catch (e) {
+              setPassState((s) => ({ ...s, loaded: true, err: e?.message ?? String(e) }));
+            }
+          }, []);
+          // 首次挂载加载口令状态（真实 React 的 useEffect；测试替身 stub 为空）。
+          useEffect(() => {
+            let alive = true;
+            fetch('/odoo-backup/passphrase-status')
+              .then((r) => r.json().catch(() => ({})))
+              .then((d) => { if (alive) setPassState((s) => ({ ...s, loaded: true, configured: Boolean(d?.configured) })); })
+              .catch(() => { if (alive) setPassState((s) => ({ ...s, loaded: true })); });
+            return () => { alive = false; };
+          }, []);
 
           // 配置服务缺席（或不可用）时，首次渲染就给出可见提示，绝不静默空白。
           const scopeReady = !!(scope && typeof scope.getSnapshot === 'function' && typeof scope.set === 'function');
@@ -367,6 +386,40 @@ window.__ModuleLoader__.load({
               setBusy((b) => ({ ...b, [name]: false }));
             }
           }, [api, setOne]);
+
+          // ---- v0.1.11 加密口令（官方 Credentials；保存成功才清空输入，失败保留） ----
+          const setPassphrase = useCallback(async () => {
+            const value = passState.input;
+            setPassState((s) => ({ ...s, busy: true, err: '', ok: '' }));
+            try {
+              const res = await fetch('/odoo-backup/set-passphrase', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ passphrase: value }),
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!(res.ok && data?.ok)) throw new Error(data?.error ?? `HTTP ${res.status}`);
+              // 用户修正 3：set 成功后才清空输入；失败保留输入并显示错误。
+              setPassState((s) => ({ ...s, busy: false, configured: true, input: '', ok: '口令已保存到 DSH 凭证库。请离线妥善保管：丢失后历史加密备份将无法解密。' }));
+            } catch (e) {
+              setPassState((s) => ({ ...s, busy: false, err: `保存失败：${e?.message ?? String(e)}` }));
+            }
+          }, [passState.input]);
+
+          const unsetPassphrase = useCallback(async () => {
+            setPassState((s) => ({ ...s, busy: true, err: '', ok: '' }));
+            try {
+              const res = await fetch('/odoo-backup/unset-passphrase', { method: 'POST' });
+              const data = await res.json().catch(() => ({}));
+              if (!(res.ok && data?.ok)) throw new Error(data?.error ?? `HTTP ${res.status}`);
+              // 用户修正 4：unset 成功后以重新读取的状态为准。
+              const st = await fetch('/odoo-backup/passphrase-status');
+              const sd = await st.json().catch(() => ({}));
+              setPassState((s) => ({ ...s, busy: false, configured: Boolean(sd?.configured), ok: '口令已从凭证库移除。' }));
+            } catch (e) {
+              setPassState((s) => ({ ...s, busy: false, err: `清除失败：${e?.message ?? String(e)}` }));
+            }
+          }, []);
 
           // ---- v0.1.8 信任面板回调（全部走既有 /odoo-backup/* 路由） ----
           const patchTrust = (name, delta) =>
@@ -598,6 +651,36 @@ window.__ModuleLoader__.load({
 
             // ---- 备份 tab ----
             tab === 'backup' && h('div', null,
+              // v0.1.11：备份加密口令（官方 Credentials；不进插件配置、不回显明文）
+              h('div', { style: { padding: 12, marginBottom: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
+                h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, '备份加密口令'),
+                h('p', { style: { color: T.text2, fontSize: 12, margin: '0 0 8px' } },
+                  '保存在 DSH 官方凭证库（文件 0600 保护），不写入插件配置；设置后备份与恢复共用，界面不再回显。'),
+                h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                  h('input', {
+                    type: 'password',
+                    value: passState.input,
+                    placeholder: passState.configured ? '已配置（输入新口令可更新）' : '输入备份加密口令',
+                    'aria-label': '备份加密口令',
+                    onChange: (e) => setPassState((s) => ({ ...s, input: e.target.value })),
+                    style: inputStyle,
+                  }),
+                  h(Btn, {
+                    disabled: passState.busy || !passState.input,
+                    onClick: setPassphrase,
+                  }, passState.busy ? '…' : (passState.configured ? '更新口令' : '保存口令')),
+                  passState.configured && h(Btn, {
+                    disabled: passState.busy,
+                    onClick: unsetPassphrase,
+                  }, '清除口令'),
+                ),
+                h('div', { style: { fontSize: 12, marginTop: 4, color: passState.configured ? T.text2 : T.warn } },
+                  `状态：${!passState.loaded ? '读取中…' : (passState.configured ? '已配置 ✓（备份/恢复共用）' : '未配置 — 备份将被拒绝')}`),
+                passState.err && h(Status, { text: passState.err, tone: 'error' }),
+                passState.ok && h(Status, { text: passState.ok }),
+                h('p', { style: { color: T.warn, fontSize: 12, margin: '6px 0 0' } },
+                  '⚠️ 请离线妥善保管口令（如密码管理器/纸质保险柜）：口令丢失后，历史加密备份将无法解密。'),
+              ),
               h('p', { style: { fontSize: 13, color: T.text2 } },
                 '选择服务器后开始备份。备份包将下载到插件设置页配置的本地目录。'),
               servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
@@ -619,6 +702,8 @@ window.__ModuleLoader__.load({
             tab === 'restore' && h('div', null,
               h('p', { style: { fontSize: 13, color: T.text2 } },
                 '恢复会覆盖目标数据库。流程：安全备份 → 临时恢复 → 验证 → 停机切换 → 验证。失败自动回滚。'),
+              h('p', { style: { fontSize: 12, color: T.text2 } },
+                `解密口令：${!passState.loaded ? '读取中…' : (passState.configured ? '使用已配置的备份加密口令（与备份共用，在「备份」页管理）' : '未配置 — 恢复加密包将被拒绝，请先在「备份」页设置')}`),
               h('p', { style: { fontSize: 12, color: T.warn } },
                 '⚠️ 切换期间站点约 2–5 分钟不可用；切换后正式环境回到备份包对应的业务时间点。'),
               servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
