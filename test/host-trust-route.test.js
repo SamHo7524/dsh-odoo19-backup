@@ -86,7 +86,16 @@ test('API-3 /client-pubkey 未配置 keyPath 时明确提示，不猜测默认�
   const h = loadHandler(); const res = makeRes();
   await h({ req: makeReq('/client-pubkey', {}), res, ...base() });
   assert.equal(res.out.statusCode, 400);
-  assert.match(JSON.parse(res.out.body).error, /keyPath|私钥路径/);
+  const err = JSON.parse(res.out.body).error;
+  assert.match(err, /keyPath|私钥路径/);
+  // v0.1.9：后端文案也要引导到信任面板内的输入框，不能指向外部「服务器表单」
+  assert.ok(!/服务器表单/.test(err), '错误文案不得再把用户指向面板外部');
+});
+
+test('API-7 /client-pubkey 后端文案与面板内联引导一致（v0.1.9）', () => {
+  const idx = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  assert.match(idx, /信任面板|上方.*私钥路径/,
+    '后端 /client-pubkey 的错误文案应引导到信任面板内的本机私钥路径输入框');
 });
 
 test('API-4 /trust-host 只改 pinnedFingerprint，保留 keyPath', async () => {
