@@ -155,18 +155,86 @@ window.__ModuleLoader__.load({
             h('p', { style: { color: T.text2, marginTop: 0 } },
               '两个方向的公钥不要混淆：上面的扫描值是「服务器主机公钥」（服务器证明自己是谁）；' +
               '这里要发给所有者的是「本插件客户端公钥」（我们证明自己有私钥），两者方向相反、不是同一个东西。'),
+            // 文件浏览器选择私钥：只取路径，绝不读取/上传私钥内容。
+            // 桌面端用官方桥 __DSH_HOST_PATHS__.pathFor(file) 拿真实绝对路径
+            // （Electron webUtils.getPathForFile）；浏览器环境只给 C:\fakepath\，
+            // 无法拿真实路径时降级为手动输入。
+            h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 } },
+              h('input', {
+                type: 'file',
+                accept: '.pem,.key,.ppk,*',
+                'aria-label': '选择本机私钥文件',
+                'data-trust-file-input': server.name,
+                style: { display: 'none' },
+                onChange: (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  let realPath = '';
+                  try {
+                    const bridge = globalThis.__DSH_HOST_PATHS__;
+                    if (bridge && typeof bridge.pathFor === 'function') realPath = bridge.pathFor(file);
+                  } catch (_) { realPath = ''; }
+                  if (!realPath) {
+                    // 浏览器环境拿不到真实绝对路径：给出可操作降级，不静默失败
+                    patch({
+                      keyPath: '', pubkey: '', installCmd: '',
+                      manualKeyPath: true,
+                      pubkeyErr: '浏览器环境无法获取文件真实路径，请点「手动输入路径」填写；' +
+                        '或在 DSH 桌面端使用「选择私钥文件」。',
+                    });
+                    return;
+                  }
+                  patch({ keyPath: realPath, pubkey: '', installCmd: '', pubkeyErr: '', manualKeyPath: false });
+                },
+              }),
+              h(Btn, {
+                disabled: !!state?.busy,
+                onClick: () => {
+                  // 精确定位本面板的 file input，避免多台服务器展开时选错
+                  let el = null;
+                  if (typeof document !== 'undefined') {
+                    const all = document.querySelectorAll('input[data-trust-file-input]');
+                    for (const input of all) {
+                      if (input.getAttribute('data-trust-file-input') === server.name) { el = input; break; }
+                    }
+                  }
+                  if (el) el.click();
+                },
+              }, '选择私钥文件'),
+              h('span', { style: { color: T.text2, fontSize: 12 } },
+                state?.keyPath ? `已选择：${state.keyPath}` : '尚未选择私钥文件'),
+              h(Btn, {
+                onClick: () => patch({ manualKeyPath: !state?.manualKeyPath }),
+              }, '手动输入路径'),
+            ),
+            // 只读路径显示（文件浏览器选择后的结果，不可直接编辑）
             h('input', {
               value: state?.keyPath ?? '',
-              placeholder: '本机私钥路径（如 C:/Users/Ho/.ssh/id_ed25519）',
+              placeholder: '通过「选择私钥文件」自动填入，无需自己输入',
               'aria-label': '本机私钥路径',
-              onChange: (e) => patch({ keyPath: e.target.value, pubkey: '', installCmd: '' }),
+              readOnly: true,
+              style: { ...inputStyle, opacity: 0.85, cursor: 'default' },
+            }),
+            // 降级：浏览器环境或用户主动切换时允许手动输入
+            state?.manualKeyPath && h('input', {
+              value: state?.manualKeyPathValue ?? '',
+              placeholder: '手动输入本机私钥路径（仅在文件选择不可用时使用）',
+              'aria-label': '手动输入本机私钥路径',
+              onChange: (e) => patch({ manualKeyPathValue: e.target.value }),
               style: inputStyle,
             }),
+            state?.manualKeyPath && h(Btn, {
+              onClick: () => {
+                const v = (state?.manualKeyPathValue ?? '').trim();
+                if (!v) { patch({ pubkeyErr: '请填写私钥路径' }); return; }
+                patch({ keyPath: v, pubkey: '', installCmd: '', pubkeyErr: '' });
+              },
+            }, '使用此路径'),
             h('p', { style: { color: T.text2, fontSize: 12, marginTop: 0 } },
-              '填写本机私钥路径后，插件只读取同名 .pub 公钥展示给你；私钥绝不上传、绝不出现在任何接口响应里。'),
+              '选择私钥文件后，插件只读取同名 .pub 公钥展示给你；私钥内容绝不读取、绝不上传、绝不出现在任何接口响应里。'),
             h(Btn, { disabled: !!state?.busy, onClick: onLoadPubkey }, '读取本机公钥'),
-            !state?.keyPath && !state?.pubkey && h(Status, {
-              text: '请先在上方填写本机私钥路径，再点「读取本机公钥」；无需退出面板去别处编辑。', tone: 'warn',
+            !state?.keyPath && !state?.pubkey && !state?.manualKeyPath && h(Status, {
+              text: '请先点「选择私钥文件」用文件浏览器选择本机私钥，再点「读取本机公钥」；无需自己输入路径。', tone: 'warn',
             }),
             state?.pubkey && h('pre', {
               style: { whiteSpace: 'pre-wrap', wordBreak: 'break-all', background: T.bg2, padding: 8, borderRadius: 4, margin: '6px 0' },
@@ -321,7 +389,7 @@ window.__ModuleLoader__.load({
             const keyPath = (st.keyPath ?? s.keyPath ?? '').trim();
             if (!keyPath) {
               patchTrust(s.name, {
-                pubkeyErr: '请先在上方「本机私钥路径」填写路径，再点「读取本机公钥」；无需退出面板。',
+                pubkeyErr: '请先点「选择私钥文件」用文件浏览器选择本机私钥；若环境不支持文件选择，请点「手动输入路径」。',
               });
               return;
             }
