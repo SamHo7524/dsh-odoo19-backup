@@ -1,6 +1,9 @@
 import z from '@deepseek-ai/schemastery';
 import { readFile } from 'node:fs/promises';
 import { createTokenStore } from './lib/tokens.js';
+import { readState } from './lib/task-state.js';
+import { readLock, inspectLock, confirmStaleLock } from './lib/server-lock.js';
+import { resolveBackupDirectory, validateDirectory, DEFAULT_BACKUP_DIRECTORY } from './lib/backup-directory.js';
 import { createService } from './lib/service.js';
 import { createOdooBackupTool, createOdooRestoreTool } from './lib/tools.js';
 import { scanHostKey, pinHostKey } from './lib/knownhosts.js';
@@ -46,7 +49,10 @@ export const Config = z.object({
     // 与 dsh-connect-workbuddy 的 asVolatile() 一致；读回时 volatile 值是
     // { get() } 活引用，必须 unwrap 后再读（见下方 unwrapVolatile）。
     .volatile(),
-  localBackupDir: z.string().default('K:/Backup/odoo').description('本机备份目录'),
+  localBackupDir: z.string().default('K:/Backup/odoo').description('本机备份目录（兼容旧配置，v0.1.13 起以 backupDirectory 为准）'),
+  backupDirectory: z.string().default('K:/Backup/odoo')
+    .description('本机备份根目录（v0.1.13：分片/Manifest/任务状态/锁统一归属；只影响新建任务）')
+    .volatile(),
   keepDays: z.number().default(30).description('本地备份保留天数'),
   passphrase: z
     .string()
@@ -86,6 +92,7 @@ export function apply(ctx, config) {
   // credentials 用 getter 透传：inject 完成后 requirePassphrase 动态拿到服务。
   const service = createService({
     config: { ...config, get servers() { return serversRef.current; } },
+    stateDir: stateDirOf(config),
     deps: {
       scanHostKey,
       pinHostKey,
@@ -132,6 +139,11 @@ export function apply(ctx, config) {
  *  - 破坏性恢复仍需 confirmToken（绑定目标 + 5 分钟 + 一次性）
  *  - 真正的授权由 Agent 工具链与用户确认承担
  */
+/** v0.1.13：统一状态源根目录（transfer-state.json / server-lock.json 同处，§6.3 / §17.1）。 */
+function stateDirOf(config) {
+  return unwrapVolatile(config?.backupDirectory) ?? unwrapVolatile(config?.localBackupDir) ?? DEFAULT_BACKUP_DIRECTORY;
+}
+
 async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId, readPublicKey, credentials }) {
   const send = (status, body) => {
     res.statusCode = status;
@@ -291,7 +303,41 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
       return send(200, { ok: true, result: await service.backup(body.server) });
     }
     if (route === '/status') {
-      return send(200, { ok: true, result: service.status() });
+      return send(200, { ok: true, result: await service.status() });
+    }
+    if (route === '/backup-directory') {
+      // v0.1.13 §3.1 / §14.1：显示/验证/修改本地备份目录。
+      const path = stateDirOf(config);
+      if (req.method === 'POST') {
+        const next = String(body.path ?? '').trim();
+        const check = await validateDirectory(next, { create: true });
+        if (!check.ok) return send(400, { ok: false, error: check.reason, ...check });
+        if (!settings || typeof settings.update !== 'function') {
+          throw new Error('Host 设置服务不可用，无法保存目录配置');
+        }
+        await settings.update(entryId, { backupDirectory: next });
+        return send(200, { ok: true, ...check, saved: true, fullPath: next });
+      }
+      const check = await validateDirectory(path, { create: false });
+      return send(200, { ok: true, path, fullPath: path, ...check });
+    }
+    if (route === '/task-lock') {
+      // v0.1.13 §17.1：服务器级互斥状态（前端按钮禁用的依据，后端锁才是裁决）。
+      const serverConfigId = body.server ?? (config.servers ?? [])[0]?.name ?? 'default';
+      const lock = await readLock(stateDirOf(config), serverConfigId);
+      const locked = Boolean(lock && lock.taskId && lock.status !== 'completed');
+      return send(200, { ok: true, result: { serverConfigId, locked, taskId: lock?.taskId ?? null, kind: lock?.kind ?? null, status: lock?.status ?? null } });
+    }
+    if (route === '/task-lock/confirm-stale') {
+      const serverConfigId = body.server ?? (config.servers ?? [])[0]?.name ?? 'default';
+      if (body.confirm !== true) throw new Error('缺少明确确认（confirm:true）');
+      const sd = stateDirOf(config);
+      const r = await confirmStaleLock(sd, serverConfigId, async (taskId) => {
+        const st = await readState(sd);
+        return st && st.taskId === taskId ? st.status : null;
+      });
+      if (!r.ok) throw new Error(r.reason ?? '无法释放遗留锁');
+      return send(200, { ok: true });
     }
     if (route === '/precheck') {
       if (!body.server) throw new Error('缺少 server 参数');
