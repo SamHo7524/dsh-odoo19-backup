@@ -65,6 +65,47 @@ window.__ModuleLoader__.load({
       }, text);
     }
 
+    /**
+     * v0.1.13 真实进度条（§14.3）：宽度只由 Host 上报的 percent 驱动，
+     * 不使用定时动画伪造；paused 冻结；网络中断显示「连接中断，重试中」不置 failed。
+     */
+    function TaskProgress({ task, netError }) {
+      if (!task || !task.taskId) return null;
+      const status = task.status ?? 'pending';
+      const percent = Math.max(0, Math.min(100, Number(task.percent) || 0));
+      const terminal = ['completed', 'failed', 'cancelled'].includes(status);
+      const paused = status === 'paused';
+      const label = paused ? '已暂停' : (terminal
+        ? ({ completed: '已完成', failed: '失败', cancelled: '已取消' })[status]
+        : (task.phaseMessage || '正在处理…'));
+      const tone = status === 'failed' ? T.error : (status === 'completed' ? T.success : T.brand);
+      return h('div', { style: { margin: '8px 0', padding: 10, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
+        h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 } },
+          h('span', null,
+            `${task.kind === 'restore' ? '恢复' : '备份'} · ${label}`),
+          h('span', null, `${percent}%`),
+        ),
+        h('div', {
+          role: 'progressbar',
+          'aria-valuenow': percent,
+          'aria-valuemin': 0,
+          'aria-valuemax': 100,
+          style: { height: 8, borderRadius: 4, background: T.bg1, overflow: 'hidden', border: `1px solid ${T.border}` },
+        },
+          h('div', {
+            style: {
+              width: `${percent}%`,
+              height: '100%',
+              background: tone,
+              transition: paused ? 'none' : 'width 0.3s linear',
+            },
+          }),
+        ),
+        netError && h(Status, { text: '连接中断，重试中（任务仍在进行，不会中断）', tone: 'warn' }),
+        status === 'failed' && task.error && h(Status, { text: String(task.error), tone: 'error' }),
+      );
+    }
+
     // 真实契约（见 dsh-web-search-free / dsh-connect-workbuddy 等已工作插件）：
     //  - 配置读写走 Client 的 `configForms` 服务，按 Host 实际服务的 entry id 取 scope
     //  - scope 提供 getSnapshot()/subscribe()/set(field,value)，快照的配置值在 .value 下
@@ -310,6 +351,66 @@ window.__ModuleLoader__.load({
               .catch(() => { if (alive) setPassState((s) => ({ ...s, loaded: true })); });
             return () => { alive = false; };
           }, []);
+
+          // v0.1.13：Host 任务状态轮询（§6.3 统一状态源 / §14.3 轮询可靠性）。
+          // 磁盘 /status 是唯一真相源；按 taskId 丢弃旧响应；kind 隔离备份/恢复。
+          const [hostTask, setHostTask] = useState(null);
+          const [netError, setNetError] = useState(false);
+          const [serverLock, setServerLock] = useState({ locked: false });
+          // v0.1.13 §3.1：本地备份目录显示/修改/验证（Host 持久化，状态不存浏览器）
+          const [dirState, setDirState] = useState({ loaded: false, path: '', fullPath: '', writable: false, editing: false, input: '', busy: false, err: '', ok: '' });
+          const loadDir = useCallback(async () => {
+            try {
+              const r = await fetch('/odoo-backup/backup-directory');
+              const d = await r.json().catch(() => ({}));
+              setDirState((s) => ({ ...s, loaded: true, path: d?.path ?? '', fullPath: d?.fullPath ?? '', writable: Boolean(d?.writable), err: d?.ok === false ? (d?.error ?? '') : '' }));
+            } catch (e) { setDirState((s) => ({ ...s, loaded: true, err: String(e?.message ?? e) })); }
+          }, []);
+          const saveDir = useCallback(async () => {
+            const next = dirState.input.trim();
+            setDirState((s) => ({ ...s, busy: true, err: '', ok: '' }));
+            try {
+              const r = await fetch('/odoo-backup/backup-directory', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ path: next }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!(r.ok && d?.ok)) throw new Error(d?.error ?? `HTTP ${r.status}`);
+              setDirState((s) => ({ ...s, busy: false, path: next, fullPath: d.fullPath ?? next, writable: true, editing: false, input: '', ok: '目录已验证并保存（只影响新建任务）' }));
+            } catch (e) { setDirState((s) => ({ ...s, busy: false, err: `目录保存失败：${e?.message ?? String(e)}` })); }
+          }, [dirState.input]);
+          useEffect(() => { loadDir(); }, [loadDir]);
+          useEffect(() => {
+            let alive = true;
+            let timer = null;
+            const terminal = ['completed', 'failed', 'cancelled'];
+            const poll = async () => {
+              try {
+                const [sr, lr] = await Promise.all([
+                  fetch('/odoo-backup/status').then((r) => r.json().catch(() => ({}))),
+                  fetch('/odoo-backup/task-lock').then((r) => r.json().catch(() => ({}))).catch(() => ({})),
+                ]);
+                if (!alive) return;
+                setNetError(false);
+                const data = sr?.result ?? sr ?? {};
+                // 只接受带 taskId 的响应；旧 taskId 响应不覆盖新任务
+                if (data.taskId) setHostTask((prev) => (!prev || prev.taskId === data.taskId || !terminal.includes(prev.status)
+                  ? { ...data } : prev));
+                setServerLock({ locked: Boolean(lr?.result?.locked ?? lr?.locked), kind: lr?.result?.kind ?? lr?.kind ?? null });
+                // 终态或组件已卸载：停止轮询（clearInterval）
+                if (timer && terminal.includes(data.status)) { clearInterval(timer); timer = null; }
+              } catch {
+                if (alive) setNetError(true); // 网络暂时中断 ≠ 任务失败：保留上次真实进度
+              }
+            };
+            poll();
+            timer = setInterval(poll, 1500);
+            return () => { alive = false; if (timer) clearInterval(timer); };
+          }, []);
+          const taskLocked = Boolean(serverLock?.locked);
+          const busyHint = taskLocked
+            ? `服务器正在执行${serverLock.kind === 'restore' ? '恢复' : '备份'}任务，已阻止并发操作`
+            : '';
 
           // 配置服务缺席（或不可用）时，首次渲染就给出可见提示，绝不静默空白。
           const scopeReady = !!(scope && typeof scope.getSnapshot === 'function' && typeof scope.set === 'function');
@@ -651,6 +752,24 @@ window.__ModuleLoader__.load({
 
             // ---- 备份 tab ----
             tab === 'backup' && h('div', null,
+              // v0.1.13 §3.1：当前备份目录 + 验证结果 + 修改（只影响新建任务，fail-closed）
+              h('div', { style: { padding: 12, marginBottom: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
+                h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, '本地备份目录'),
+                h('div', { style: { fontSize: 12, color: T.text2, marginBottom: 6 } },
+                  `当前备份目录：${dirState.path || '读取中…'} ｜ 验证：${dirState.writable ? '可写 ✓' : '不可验证/不可用'} ｜ 实际完整路径：${dirState.fullPath || '—'}`),
+                h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                  h(Btn, { disabled: dirState.busy, onClick: () => setDirState((s) => ({ ...s, editing: !s.editing, input: s.path, err: '', ok: '' })) }, dirState.editing ? '取消' : '修改目录'),
+                  dirState.editing && h('input', {
+                    value: dirState.input, 'aria-label': '备份目录', placeholder: '如 K:\\Backup\\odoo',
+                    onChange: (e) => setDirState((s) => ({ ...s, input: e.target.value })), style: inputStyle,
+                  }),
+                  dirState.editing && h(Btn, { disabled: dirState.busy || !dirState.input.trim(), onClick: saveDir }, dirState.busy ? '…' : '验证并保存'),
+                ),
+                dirState.err && h(Status, { text: dirState.err, tone: 'error' }),
+                dirState.ok && h(Status, { text: dirState.ok }),
+                h('p', { style: { fontSize: 12, color: T.warn, margin: '6px 0 0' } },
+                  '修改目录只影响新建任务；未完成/历史任务仍绑定创建时的原目录，不会自动迁移。'),
+              ),
               // v0.1.11：备份加密口令（官方 Credentials；不进插件配置、不回显明文）
               h('div', { style: { padding: 12, marginBottom: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
                 h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, '备份加密口令'),
@@ -683,9 +802,12 @@ window.__ModuleLoader__.load({
               ),
               h('p', { style: { fontSize: 13, color: T.text2 } },
                 '选择服务器后开始备份。备份包将下载到插件设置页配置的本地目录。'),
+              // v0.1.13：真实进度条（备份）与服务器级互斥提示（§14.3 / §17.1）
+              taskLocked && h(Status, { text: busyHint, tone: 'warn' }),
+              hostTask && hostTask.kind === 'backup' && h(TaskProgress, { task: hostTask, netError }),
               servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
                 h(Btn, {
-                  disabled: !!busy[s.name],
+                  disabled: !!busy[s.name] || (taskLocked && true),
                   onClick: () => call(s.name, async (api) => {
                     setOne(s.name, 'backing up...');
                     const { result } = await api('/backup', { server: s.name });
@@ -706,6 +828,9 @@ window.__ModuleLoader__.load({
                 `解密口令：${!passState.loaded ? '读取中…' : (passState.configured ? '使用已配置的备份加密口令（与备份共用，在「备份」页管理）' : '未配置 — 恢复加密包将被拒绝，请先在「备份」页设置')}`),
               h('p', { style: { fontSize: 12, color: T.warn } },
                 '⚠️ 切换期间站点约 2–5 分钟不可用；切换后正式环境回到备份包对应的业务时间点。'),
+              // v0.1.13：真实进度条（恢复）与服务器级互斥提示（§14.3 / §17.1）
+              taskLocked && h(Status, { text: busyHint, tone: 'warn' }),
+              hostTask && hostTask.kind === 'restore' && h(TaskProgress, { task: hostTask, netError }),
               servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
                 h('input', {
                   value: restorePath[s.name] ?? '',
@@ -716,7 +841,7 @@ window.__ModuleLoader__.load({
                 }),
                 h(Btn, {
                   tone: 'danger',
-                  disabled: !!busy[s.name] || !(restorePath[s.name] ?? '').trim(),
+                  disabled: (!!busy[s.name] || !(restorePath[s.name] ?? '').trim()) || (taskLocked && true),
                   onClick: () => {
                     // 同样不能用 window.prompt/confirm：Electron 不实现它们。
                     const pkg = (restorePath[s.name] ?? '').trim();
