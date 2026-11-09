@@ -74,3 +74,11 @@ test('RESUME-5 backup.js 成功后写 completed.json 标记', () => {
   const src = readFileSync(new URL('../lib/backup.js', import.meta.url), 'utf8');
   assert.match(src, /completed\.json/, '成功路径应写完成标记');
 });
+
+test('RESUME-6 续传分支不得引用仅在新建分支内声明的 manifest 变量（真机缺陷回归）', () => {
+  const src = readFileSync(new URL('../lib/backup.js', import.meta.url), 'utf8');
+  const ret = src.slice(src.lastIndexOf('return {'));
+  assert.ok(!/\bmanifest\b/.test(ret) || /manifestMeta/.test(ret),
+    '返回结构不得引用仅在新建分支内声明的 manifest');
+  assert.match(src, /let manifestMeta/, '备份元数据变量应在 try 外声明');
+});
