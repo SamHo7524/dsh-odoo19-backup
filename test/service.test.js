@@ -115,9 +115,9 @@ test('service.restore 加密包正常执行', async () => {
   assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 1);
 });
 
-test('service.status 初始无任务', () => {
+test('service.status 初始无任务', async () => {
   const svc = createService({ config: cfg, deps: deps() });
-  const s = svc.status();
+  const s = await svc.status();
   assert.equal(s.running, false);
   assert.equal(s.lastTask, null);
 });
@@ -129,10 +129,10 @@ test('service.status 在恢复进行中标记 running', async () => {
   const svc = createService({ config: cfg, deps: d });
   const p = svc.restore('staging', null, 'K:/b.tar', {});
   await new Promise((r) => setTimeout(r, 10));
-  assert.equal(svc.status().running, true);
+  assert.equal((await svc.status()).running, true);
   release();
   await p;
-  assert.equal(svc.status().running, false);
+  assert.equal((await svc.status()).running, false);
 });
 
 test('service 对未知服务器抛错', async () => {
