@@ -8,6 +8,34 @@
 
 ---
 
+## [0.1.13] — 2026-11-09
+
+**SCP 大文件分片、断点续传、统一任务状态、P0 服务器互斥、真实进度条。**
+
+### 新增
+- `lib/chunks.js`：分片计划（100 MiB 片、≥100 MiB 阈值）、Manifest、分片/全量 SHA-256 校验、组装顺序守卫。
+- `lib/chunk-transfer.js`：远端 `split` → 逐片 SCP（复用 `buildScpArgs`）→ 临时片 → 大小+SHA 校验 → 原子 rename → 重验真实文件续传 → 组装 → 全量 SHA；全部通过后**才**走现有 `encryptFile`（R10 时机/格式/恢复入口不变）。
+- `lib/chunk-control.js`：真实暂停/继续/重试/取消（终止 SCP 子进程、同 taskId 单活动执行者）。
+- `lib/task-state.js`：`transfer-state.json` 唯一持久化状态源；六态生命周期；taskId/kind 隔离；原子写；`completed` 仅后端确认后置位。
+- `lib/server-lock.js`：**P0 服务器级互斥**——同一服务器一个备份/恢复任务；原子获取；锁关联 taskId/kind/status；终态释放；重启遗留/损坏锁 fail-closed，未经确认不判空闲。UI 与 Agent 工具全部入口经过。
+- `lib/backup-directory.js` + `backupDirectory` 配置：验证/创建/可写探测、fail-closed、旧任务绑定原目录。
+- 前端：备份与恢复**真实进度条**、轮询 `/status`（磁盘状态、非 localStorage）、网络中断≠失败、终态停轮询、暂停冻结、互斥按钮禁用+原因、目录面板。
+- `/status`、`/task-lock`、`/task-lock/confirm-stale`、`/backup-directory` 路由。
+
+### 安全 / 保持不变
+`guardHostKey`、`pinnedFingerprint`、`requireTrusted`、`buildScpArgs` 安全参数、R10 `encryptFile`/`decryptFile`、Passphrase Credentials、备份格式、`detectFormat()`、`runRestore()` 状态机、fail-closed 全部未改。不引入密码认证、不 `accept-new`。SHA-256 只验证完整性，不证明 Manifest 来源真实性。
+
+### 测试
+**364 / 364**（70+ 条 v0.1.13 新用例覆盖规格 37 项矩阵）。真机验收（≥500 MB、人为中断、DSH 重启、已校验片不重复下载、恢复入口）单独记录，**不以单测通过冒充验收通过**。
+
+### 规格与源码的最小调整（记录原因，以保护数据安全为前提）
+1. `completed` 以 `result.ok === true` 作为后端确认；分片/加密证据由 chunk-transfer 写入后再收紧，不伪造 integrity 标记。
+2. `chunk-transfer` **不**自行写 `transfer-state.json`；状态返回给 `service.progressReporter` 统一写盘（避免两套状态源互相矛盾）。
+3. 失败时**保留**远端 tar/分片供续传（旧代码会删除），符合 §13。
+4. `backupDirectory` 标记 `.volatile()`，复用既有 `settings.update` 机制持久化（与 `servers` 相同）。
+
+---
+
 ## [0.1.12] — 2026-11-07
 
 **scp 支持 sshConfigAlias，传输进度真实可见。**
