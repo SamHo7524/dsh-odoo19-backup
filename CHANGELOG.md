@@ -8,6 +8,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.13] — 2026-11-09
+
+**SCP chunked transfer, resumable downloads, unified task state, P0 server mutex, real progress bars.**
+
+### Added
+- `lib/chunks.js`: planChunks (100 MiB chunks, ≥100 MiB threshold), Manifest, SHA-256 chunk/full verification, assemble-order guards.
+- `lib/chunk-transfer.js`: remote `split` → per-part SCP via `buildScpArgs` → tmp → size+SHA verify → atomic rename → resume by re-verifying real files → assemble → full SHA check. Only after all checks does the existing `encryptFile` run (R10 timing/format/restore entry unchanged).
+- `lib/chunk-control.js`: real pause/resume/retry/cancel (SCP child termination, single active executor per taskId).
+- `lib/task-state.js`: `transfer-state.json` as the single persisted state source; six-state lifecycle (pending/running/paused/completed/failed/cancelled); taskId/kind isolation; atomic writes; `completed` only after backend confirmation.
+- `lib/server-lock.js`: **P0 server-level mutex** — one backup/restore task per server; atomic acquire; lock tied to taskId/kind/status; released on terminal states; stale/corrupt locks on restart stay fail-closed until explicit confirmation. All execution entries (UI + Agent tools) go through it.
+- `lib/backup-directory.js` + `backupDirectory` config: validate/create/writable probe, fail-closed, old tasks keep their recorded directory.
+- Frontend: real progress bars for **backup and restore**, polling `/status` (disk state, not localStorage), network interruption ≠ failure, terminal-state stop, paused freeze, mutex-disabled buttons with reason, directory panel.
+- `/status`, `/task-lock`, `/task-lock/confirm-stale`, `/backup-directory` routes.
+
+### Security / unchanged
+`guardHostKey`, `pinnedFingerprint`, `requireTrusted`, `buildScpArgs` safety options, R10 `encryptFile`/`decryptFile`, Passphrase Credentials, backup format, `detectFormat()`, `runRestore()` state machine, fail-closed. No password auth, no `accept-new`. SHA-256 verifies integrity only, not Manifest origin authenticity.
+
+### Tests
+**364 / 364** (70+ new v0.1.13 cases covering the 37-item spec matrix). Real-machine acceptance (≥500 MB, manual interrupt, DSH restart, no re-download of verified parts, restore entry) is recorded separately and is NOT claimed as passed by unit tests alone.
+
+### Spec/source adjustments (recorded, minimum necessary for data safety)
+1. `completed` uses the backend's `result.ok === true` as confirmation; chunk/encryption evidence is written by chunk-transfer and tightened in follow-up — no fake integrity flags.
+2. `chunk-transfer` does **not** write its own `transfer-state.json`; state is returned to `service.progressReporter`, which writes the single disk state (avoids two contradictory sources).
+3. On failure the remote tar/parts are **kept** for resume (old code deleted them), matching §13.
+4. `backupDirectory` is `.volatile()` so the existing `settings.update` path can persist it (same mechanism as `servers`).
+
+---
+
 ## [0.1.12] — 2026-11-07
 
 **scp supports `sshConfigAlias`, and transfer progress is real.**
