@@ -1,8 +1,8 @@
 import z from '@deepseek-ai/schemastery';
 import { readFile } from 'node:fs/promises';
 import { createTokenStore } from './lib/tokens.js';
-import { readState } from './lib/task-state.js';
-import { readLock, inspectLock, confirmStaleLock } from './lib/server-lock.js';
+import { readState, patchState } from './lib/task-state.js';
+import { readLock, inspectLock, confirmStaleLock, releaseLock } from './lib/server-lock.js';
 import { resolveBackupDirectory, validateDirectory, DEFAULT_BACKUP_DIRECTORY } from './lib/backup-directory.js';
 import { createService } from './lib/service.js';
 import { createOdooBackupTool, createOdooRestoreTool } from './lib/tools.js';
@@ -341,6 +341,22 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
       }
       const locked = Boolean(found);
       return send(200, { ok: true, result: { serverConfigId: body.server ?? found?.serverConfigId ?? null, locked, taskId: found?.taskId ?? null, kind: found?.kind ?? null, status: found?.status ?? null } });
+    }
+    if (route === '/task-cancel') {
+      // §9 取消 / §17.1 重启恢复：明确确认后把遗留任务置 cancelled 并释放锁。
+      // 只有状态仍属「活动」的任务可取消；终态任务不允许被改成 cancelled。
+      if (body.confirm !== true) throw new Error('取消任务需要明确确认（confirm:true）');
+      const dir = stateDirOf(config);
+      const st = await readState(dir);
+      if (!st) throw new Error('当前无持久化任务状态');
+      if (['completed', 'failed', 'cancelled'].includes(st.status)) {
+        return send(200, { ok: true, alreadyTerminal: st.status });
+      }
+      const ok = await patchState(dir, st.taskId, { status: 'cancelled', phaseMessage: '用户已取消' });
+      if (!ok) throw new Error('任务状态已变更，取消失败（taskId 不匹配）');
+      const ids = (unwrapVolatile(config?.servers) ?? []).map((s) => s?.name).filter(Boolean);
+      for (const id of ids) await releaseLock(dir, id, st.taskId).catch(() => {});
+      return send(200, { ok: true, status: 'cancelled', taskId: st.taskId });
     }
     if (route === '/task-lock/confirm-stale') {
       const serverConfigId = body.server ?? defaultServerId(config);
