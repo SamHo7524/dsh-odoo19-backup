@@ -189,3 +189,9 @@ test('CT-10 未完成的 .tmp 永不当有效分片', async () => {
     assert.equal(f.calls.length, manifest.chunkCount, '所有片都要真正下载');
   });
 });
+
+test('CT-11 远端切片脚本不得用 bs=1 逐字节读大文件（真机性能缺陷回归）', () => {
+  const script = CT.remoteSplitScript();
+  assert.ok(!/bs=1\b/.test(script), 'bs=1 会让 500MB 级切片耗时数小时');
+  assert.match(script, /split -b|bs=1M|iflag=skip_bytes/, '应使用块级切分/读取');
+});
