@@ -195,3 +195,10 @@ test('CT-11 远端切片脚本不得用 bs=1 逐字节读大文件（真机性�
   assert.ok(!/bs=1\b/.test(script), 'bs=1 会让 500MB 级切片耗时数小时');
   assert.match(script, /split -b|bs=1M|iflag=skip_bytes/, '应使用块级切分/读取');
 });
+
+test('CT-12 续传时临时分片文件名唯一（旧进程占用固定 tmp 名不得导致 EBUSY）', () => {
+  const a = CT.tmpPathFor('/tmp/x', 3);
+  const b = CT.tmpPathFor('/tmp/x', 3);
+  assert.notEqual(a, b, '每次下载用唯一 tmp 名，避免与遗留进程句柄冲突');
+  assert.match(a, /part003\..*\.tmp/, '仍保留分片语义');
+});
