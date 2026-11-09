@@ -144,6 +144,12 @@ function stateDirOf(config) {
   return unwrapVolatile(config?.backupDirectory) ?? unwrapVolatile(config?.localBackupDir) ?? DEFAULT_BACKUP_DIRECTORY;
 }
 
+/** /task-lock 的默认服务器标识必须与 service 的锁键（server.name）一致；servers 是 volatile 活引用。 */
+function defaultServerId(config) {
+  const list = unwrapVolatile(config?.servers) ?? [];
+  return Array.isArray(list) && list[0]?.name ? list[0].name : null;
+}
+
 async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId, readPublicKey, credentials }) {
   const send = (status, body) => {
     res.statusCode = status;
@@ -323,13 +329,22 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
     }
     if (route === '/task-lock') {
       // v0.1.13 §17.1：服务器级互斥状态（前端按钮禁用的依据，后端锁才是裁决）。
-      const serverConfigId = body.server ?? (config.servers ?? [])[0]?.name ?? 'default';
-      const lock = await readLock(stateDirOf(config), serverConfigId);
-      const locked = Boolean(lock && lock.taskId && lock.status !== 'completed');
-      return send(200, { ok: true, result: { serverConfigId, locked, taskId: lock?.taskId ?? null, kind: lock?.kind ?? null, status: lock?.status ?? null } });
+      // 未指定 server 时检查所有已配置服务器：任一处于活动锁即视为 locked。
+      const dir = stateDirOf(config);
+      const list = unwrapVolatile(config?.servers) ?? [];
+      const ids = (Array.isArray(list) ? list.map((s) => s?.name).filter(Boolean) : []);
+      const targets = body.server ? [body.server] : ids;
+      let found = null;
+      for (const id of targets) {
+        const lock = await readLock(dir, id);
+        if (lock && lock.taskId && lock.status !== 'completed') { found = { serverConfigId: id, ...lock }; break; }
+      }
+      const locked = Boolean(found);
+      return send(200, { ok: true, result: { serverConfigId: body.server ?? found?.serverConfigId ?? null, locked, taskId: found?.taskId ?? null, kind: found?.kind ?? null, status: found?.status ?? null } });
     }
     if (route === '/task-lock/confirm-stale') {
-      const serverConfigId = body.server ?? (config.servers ?? [])[0]?.name ?? 'default';
+      const serverConfigId = body.server ?? defaultServerId(config);
+      if (!serverConfigId) throw new Error('缺少 server 参数');
       if (body.confirm !== true) throw new Error('缺少明确确认（confirm:true）');
       const sd = stateDirOf(config);
       const r = await confirmStaleLock(sd, serverConfigId, async (taskId) => {
