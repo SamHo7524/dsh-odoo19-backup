@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 
 const SRC = 'C:/Users/Ho/.dsh/remote-workspaces/wmv8yhew3a4r8/dsh-odoo-backup';
 const RELEASES = 'K:/Backup/odoo-plugin-releases';
-const VERSION = '0.1.12';
+const VERSION = '0.1.13';
 const SNAP = join(RELEASES, `v${VERSION}-source`);
 const PACKAGES = join(RELEASES, 'packages');
 
