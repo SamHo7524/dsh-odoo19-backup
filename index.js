@@ -373,7 +373,8 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
     if (route === '/precheck') {
       if (!body.server) throw new Error('缺少 server 参数');
       if (!body.packagePath) throw new Error('缺少 packagePath 参数');
-      if (!(config.servers ?? []).some((s) => s.name === body.server)) {
+      const serverList = unwrapVolatile(config.servers) ?? [];
+      if (!serverList.some((s) => s.name === body.server)) {
         throw new Error(`未找到服务器: ${body.server}`);
       }
       const neutralize = Boolean(body.neutralize);
