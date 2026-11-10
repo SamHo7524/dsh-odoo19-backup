@@ -62,8 +62,10 @@ test('odoo_backup: 必须声明 output.schema 与 render', () => {
 test('odoo_backup: listServers 只暴露非敏感字段', async () => {
   const { backupTool } = makeTools();
   const out = await backupTool.execute({ action: 'listServers' });
-  assert.equal(out.length, 2);
-  assert.deepEqual(Object.keys(out[0]).sort(), ['host', 'name', 'port', 'user']);
+  // v0.1.16：与 output.schema（type: object）一致，返回对象而不是裸数组。
+  assert.ok(out && typeof out === 'object' && !Array.isArray(out), '返回值必须是对象');
+  assert.equal(out.servers.length, 2);
+  assert.deepEqual(Object.keys(out.servers[0]).sort(), ['host', 'name', 'port', 'user']);
 });
 
 test('odoo_backup: test 委托给服务', async () => {

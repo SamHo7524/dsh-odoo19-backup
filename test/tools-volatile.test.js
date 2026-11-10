@@ -41,9 +41,9 @@ function fakeService() {
 test('TOOLVOL-1 listServers 必须解包 volatile servers', async () => {
   const tool = createOdooBackupTool({ config: { servers: volatile(servers) }, service: fakeService() });
   const out = await tool.execute({ action: 'listServers' });
-  assert.equal(out.length, 2);
-  assert.deepEqual(out[0], { name: 'toogel', host: '47.121.205.143', port: 22, user: 'root' });
-  assert.deepEqual(out[1], { name: 'staging', host: '119.29.10.202', port: 22, user: 'root' },
+  assert.equal(out.servers.length, 2);
+  assert.deepEqual(out.servers[0], { name: 'toogel', host: '47.121.205.143', port: 22, user: 'root' });
+  assert.deepEqual(out.servers[1], { name: 'staging', host: '119.29.10.202', port: 22, user: 'root' },
     '缺省 port/user 也要回填');
 });
 
@@ -74,14 +74,40 @@ test('TOOLVOL-5 普通数组配置仍然可用（回归）', async () => {
   const svc = fakeService();
   const tool = createOdooBackupTool({ config: { servers }, service: svc });
   const out = await tool.execute({ action: 'listServers' });
-  assert.equal(out.length, 2);
+  assert.equal(out.servers.length, 2);
   await tool.execute({ action: 'discover', server: 'staging' });
   assert.deepEqual(svc.calls.at(-1), ['discover', 'staging']);
 });
 
-test('TOOLVOL-6 servers 缺失或为空时 listServers 返回空数组而不是抛错', async () => {
+test('TOOLVOL-6 servers 缺失或为空时 listServers 返回空列表而不是抛错', async () => {
   const tool = createOdooBackupTool({ config: {}, service: fakeService() });
-  assert.deepEqual(await tool.execute({ action: 'listServers' }), []);
+  assert.deepEqual(await tool.execute({ action: 'listServers' }), { ok: true, servers: [] });
   const tool2 = createOdooBackupTool({ config: { servers: volatile([]) }, service: fakeService() });
-  assert.deepEqual(await tool2.execute({ action: 'listServers' }), []);
+  assert.deepEqual(await tool2.execute({ action: 'listServers' }), { ok: true, servers: [] });
+});
+
+/**
+ * v0.1.16 真机缺陷回归：`output.schema` 声明 `type: object`，但 listServers 曾返回
+ * **裸数组**，于是 DSH 在回传结果时校验失败：
+ *   tool "odoo_backup" returned invalid output: "value" must be an object
+ * volatile 解包修好之后，这个契约不一致才暴露出来。以下两条把「返回值形状」钉死。
+ */
+test('TOOLVOL-7 listServers 必须返回对象（与 output.schema 的 type: object 一致）', async () => {
+  const tool = createOdooBackupTool({ config: { servers }, service: fakeService() });
+  assert.equal(tool.output.schema.type, 'object');
+  const out = await tool.execute({ action: 'listServers' });
+  assert.equal(Array.isArray(out), false, '不能返回裸数组：DSH 会以 "value" must be an object 拒绝');
+  assert.equal(typeof out, 'object');
+  assert.equal(out.ok, true);
+  assert.ok(Array.isArray(out.servers));
+});
+
+test('TOOLVOL-8 listServers 的 render 能吃对象形态，空列表给出提示', () => {
+  const tool = createOdooBackupTool({ config: { servers }, service: fakeService() });
+  const rendered = tool.output.render({ action: 'listServers' }, { ok: true, servers: servers.map((s) => ({ ...s, port: 22, user: 'root' })) });
+  assert.equal(rendered[0].type, 'text');
+  assert.ok(rendered[0].text.includes('toogel'));
+  assert.ok(rendered[0].text.includes('47.121.205.143'));
+  const empty = tool.output.render({ action: 'listServers' }, { ok: true, servers: [] });
+  assert.ok(empty[0].text.includes('尚未配置'));
 });

@@ -8,6 +8,31 @@
 
 ---
 
+## [0.1.16] — 2026-11-10
+
+**Agent 工具输出契约修复：`listServers` 返回裸数组，而 `output.schema` 声明的是 `type: object`。**
+
+### 背景（真机缺陷，距 0.1.15 发布仅数分钟）
+volatile 修复到位后，`odoo_backup { action: "listServers" }` 越过了崩溃，却在下一层被拦住：
+
+```
+Error: tool "odoo_backup" returned invalid output: "value" must be an object
+```
+
+Host 会用工具自己声明的 `output.schema` 校验返回值，而 `odoo_backup` 声明的是 `type: object`，但 `listServers` 分支返回的是普通数组。这个缺陷被 0.1.14 的崩溃**掩盖**了：代码根本走不到输出校验那一步。其他 action 返回的都是对象（service 的结果），只有 `listServers` 例外。
+
+### 修复
+- `lib/tools.js`：`listServers` 改为返回 `{ ok: true, servers: [...] }`，与其他 action 及声明的 schema 一致。
+- `listServers` 的 `render` 改为读 `value.servers`（仍兼容旧的裸数组），空列表提示保留。
+
+### 测试
+**559 / 559**（基线 557 + 新增 `TOOLVOL-7` 对照 `output.schema.type` 的对象形态契约、`TOOLVOL-8` 对象形态与空列表的 `render`）。`TOOLVOL-1/5/6` 与「`listServers` 只暴露非敏感字段」先改为对象形态并**先失败**，正是这一步让契约不一致暴露出来。`node --check` 30/30 文件通过。
+
+### 安全边界 / 未变
+授权、加密、`confirmToken`、恢复状态机与全部 Host 路由均未改动。
+
+---
+
 ## [0.1.15] — 2026-11-10
 
 **Agent 工具崩溃修复：`Config.servers` 在运行时是 `.volatile()` 的 `{ get() }` 活引用，而 `lib/tools.js` 把它当普通数组读了。**

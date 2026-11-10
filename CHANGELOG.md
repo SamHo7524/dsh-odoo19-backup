@@ -8,6 +8,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.16] — 2026-11-10
+
+**Agent-tool output contract fix: `listServers` returned a bare array while `output.schema` declares `type: object`.**
+
+### Background (real-machine defect, released minutes after 0.1.15)
+With the volatile fix in place, `odoo_backup { action: "listServers" }` got past the crash but then failed one layer later:
+
+```
+Error: tool "odoo_backup" returned invalid output: "value" must be an object
+```
+
+The Host validates a tool result against its own `output.schema`, and `odoo_backup` declares `type: object` — but the `listServers` branch returned a plain array. The crash in 0.1.14 had masked this: the code never got as far as the output validator. Every other action already returned an object (the service results), so `listServers` was the only offender.
+
+### Fixed
+- `lib/tools.js`: `listServers` now returns `{ ok: true, servers: [...] }` — same shape as the other actions and consistent with the declared schema.
+- `render` for `listServers` reads `value.servers` (still tolerates a legacy bare array) and keeps the empty-state text.
+
+### Tests
+**559 / 559** (baseline 557 + `TOOLVOL-7` object-shape contract against `output.schema.type`, `TOOLVOL-8` render over the object shape and the empty list). `TOOLVOL-1/5/6` and `odoo_backup: listServers 只暴露非敏感字段` were updated to the object shape and failed first, which is what made the contract violation visible. `node --check` 30/30 files.
+
+### Security / unchanged
+No change to authorization, encryption, `confirmToken`, the restore state machine, or any Host route.
+
+---
+
 ## [0.1.15] — 2026-11-10
 
 **Agent-tool crash fix: `Config.servers` is a `.volatile()` live reference (`{ get() }`) at runtime, and `lib/tools.js` read it as a plain array.**
