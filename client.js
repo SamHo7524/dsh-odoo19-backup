@@ -10,6 +10,24 @@ window.__ModuleLoader__.load({
     const EMPTY_SNAPSHOT = Object.freeze({});
     const NOOP_UNSUB = () => {};
 
+    // v0.1.14：恢复包路径规范化。Client 与 Host 不能共享模块（各自独立作用域），
+    // 因此这里内联一份与 lib/restore-path.js 严格同语义的实现；
+    // test/restore-path-flow.test.js 的 FLOW-6 断言两端都调用同名函数，防止规则漂移。
+    function normalizeRestorePath(raw) {
+      let s = String(raw ?? '').trim();
+      if (s.length >= 2 && s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+      return s.replace(/\//g, '\\'); // 仅浏览器端（Windows 桌面）使用
+    }
+
+    // v0.1.14：恢复目标域名校验（与 lib/site-domain.js 的 isHostname 同语义）。
+    const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+    function isHostname(value) {
+      const s = String(value ?? '').trim();
+      if (!s || s.length > 253) return false;
+      if (/^(\d{1,3}\.){3}\d{1,3}$/.test(s)) return false;
+      return HOSTNAME_RE.test(s);
+    }
+
     // 只使用 cordis_inspect_query Theme.listTokens 列出的主题 token。
     // 字面颜色仅用于 artwork；UI 控件一律走 token，保证明暗主题自动适配。
     const T = {
@@ -118,6 +136,7 @@ window.__ModuleLoader__.load({
         // 可见文案走 Client locale 服务；回退值与 locale/zh.json 保持一致。
         const dict = {
           'tab.servers': '服务器', 'tab.backup': '备份', 'tab.restore': '恢复',
+          'settings.nav': 'Odoo19 备份与恢复',
           'server.add': '添加服务器', 'server.test': '测试连接',
           'backup.start': '开始备份', 'restore.start': '执行恢复',
           'task.delete': '删除',
@@ -314,6 +333,19 @@ window.__ModuleLoader__.load({
           );
         }
 
+        // v0.1.14 UI 宿主迁移：设置页导航图标（settings.section.icon 组件收 { size }）。
+        // 壳层对未注册图标的栏目只渲染默认齿轮，这里给一个数据库轮廓图标。
+        function OdooNavIcon({ size = 16 }) {
+          return h('svg', {
+            width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+            stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round',
+            strokeLinejoin: 'round', 'aria-hidden': true, focusable: 'false',
+          },
+          h('ellipse', { cx: 8, cy: 4, rx: 5.2, ry: 2.1 }),
+          h('path', { d: 'M2.8 4v8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1V4' }),
+          h('path', { d: 'M2.8 8c0 1.16 2.33 2.1 5.2 2.1s5.2-.94 5.2-2.1' }));
+        }
+
         function OdooBackupPanel({ scope }) {
           const [tab, setTab] = useState('servers');
           const [status, setStatus] = useState({});
@@ -323,7 +355,7 @@ window.__ModuleLoader__.load({
           const [adding, setAdding] = useState(false);
           const [draft, setDraft] = useState({
             name: '', host: '', user: 'root', keyPath: '',
-            sshConfigAlias: '', pinnedFingerprint: '',
+            sshConfigAlias: '', pinnedFingerprint: '', dbName: '',
           });
           // v0.1.8：编辑已有服务器（null = 新增，name = 正在编辑的服务器）
           const [editingName, setEditingName] = useState(null);
@@ -331,6 +363,40 @@ window.__ModuleLoader__.load({
           // { scan, answerFp, answerType, pubkey, pubkeyErr, expected:{host,port,user}, phase }
           const [trust, setTrust] = useState({});
           const [restorePath, setRestorePath] = useState({}); // 恢复包路径：同样不用 window.prompt（Electron 不实现）。
+          // v0.1.14：恢复目标域名（留空=自动用服务器名）；只存 Host 配置，不落浏览器存储。
+          const [domainState, setDomainState] = useState({ loaded: false, value: '', input: '', busy: false, err: '', ok: '' });
+          // v0.1.14：恢复后重签目标库签名密钥。默认开启；取消勾选则保留备份中的原密钥。
+          const [rotateSecret, setRotateSecret] = useState(true);
+          const loadRestoreDomain = useCallback(async () => {
+            try {
+              const r = await fetch('/odoo-backup/restore-domain');
+              const d = await r.json().catch(() => ({}));
+              setDomainState((s) => ({ ...s, loaded: true, value: d?.domain ?? '', err: d?.ok === false ? (d?.error ?? '') : '' }));
+            } catch (e) { setDomainState((s) => ({ ...s, loaded: true, err: String(e?.message ?? e) })); }
+          }, []);
+          const saveRestoreDomain = useCallback(async () => {
+            const v = String(domainState.input ?? '').trim();
+            if (v && !isHostname(v)) {
+              setDomainState((s) => ({ ...s, err: '域名不合法：只接受形如 odoo.example.com 的主机名（留空表示自动用服务器名）', ok: '' }));
+              return;
+            }
+            setDomainState((s) => ({ ...s, busy: true, err: '', ok: '' }));
+            try {
+              const r = await fetch('/odoo-backup/restore-domain', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ domain: v }),
+              });
+              const d = await r.json().catch(() => ({}));
+              if (!(r.ok && d?.ok)) throw new Error(d?.error ?? `HTTP ${r.status}`);
+              setDomainState((s) => ({
+                ...s, busy: false, value: d.domain ?? '', input: '',
+                ok: d.mode === 'auto' ? '已保存：留空（自动用服务器名）' : `已保存：${d.domain}`,
+              }));
+            } catch (e) {
+              setDomainState((s) => ({ ...s, busy: false, err: `保存失败：${e?.message ?? String(e)}` }));
+            }
+          }, [domainState.input]);
+          useEffect(() => { loadRestoreDomain(); }, [loadRestoreDomain]);
           // v0.1.11：备份加密口令（存官方 Credentials，不进插件配置）。
           // 状态只含 configured；口令值只在输入框里，保存成功后立即清空。
           const [passState, setPassState] = useState({ loaded: false, configured: false, input: '', busy: false, err: '', ok: '' });
@@ -488,6 +554,77 @@ window.__ModuleLoader__.load({
             }
           }, [api, setOne]);
 
+          // ---- v0.1.14 收尾：中立化状态（按服务器名隔离，不用 window.confirm） ----
+          const [neuState, setNeuState] = useState({});
+          const setNeu = useCallback((name, patch) => {
+            setNeuState((m) => ({ ...m, [name]: { ...(m[name] ?? {}), ...patch } }));
+          }, []);
+          const loadNeuStatus = useCallback(async (name) => {
+            setNeu(name, { busy: true, err: '', okText: '' });
+            try {
+              const d = await api('/neutralize-status', { server: name });
+              setNeu(name, { busy: false, loaded: true, status: d, err: '' });
+            } catch (e) {
+              setNeu(name, { busy: false, loaded: true, err: `读取中立化状态失败：${e?.message ?? String(e)}` });
+            }
+          }, [api, setNeu]);
+          const keepNeutralize = useCallback(async (name) => {
+            setNeu(name, { busy: true, err: '', okText: '', result: null, warnings: null, confirmToken: null });
+            try {
+              const d = await api('/neutralize-apply', { server: name, action: 'keep' });
+              setNeu(name, {
+                busy: false, result: d.result,
+                okText: d.result?.reason ?? '已保持中立化（未改动目标库）',
+              });
+            } catch (e) {
+              setNeu(name, { busy: false, err: `保持失败：${e?.message ?? String(e)}` });
+            }
+          }, [api, setNeu]);
+          const precheckRelease = useCallback(async (name) => {
+            setNeu(name, { busy: true, err: '', okText: '', result: null });
+            try {
+              const d = await api('/neutralize-precheck', { server: name, action: 'release' });
+              if (d.alreadyReleased) {
+                setNeu(name, {
+                  busy: false, warnings: null, confirmToken: null,
+                  okText: '目标库当前未处于中立化状态，无需解除。',
+                });
+                return;
+              }
+              setNeu(name, {
+                busy: false, warnings: d.warnings ?? [],
+                confirmToken: d.confirmToken, status: d.status ?? null,
+              });
+            } catch (e) {
+              setNeu(name, { busy: false, err: `预检失败：${e?.message ?? String(e)}` });
+            }
+          }, [api, setNeu]);
+          const confirmRelease = useCallback(async (name) => {
+            const st = neuState[name] ?? {};
+            if (!st.confirmToken) { setNeu(name, { err: '缺少确认令牌，请重新预检' }); return; }
+            setNeu(name, { busy: true, err: '', okText: '' });
+            try {
+              const codes = String(st.codes ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+              const d = await api('/neutralize-apply', {
+                server: name,
+                action: 'release',
+                confirmToken: st.confirmToken,
+                enablePaymentCodes: codes,
+              });
+              setNeu(name, {
+                busy: false, confirmToken: null, warnings: null,
+                result: d.result, okText: '已解除中立化', loaded: false,
+              });
+            } catch (e) {
+              setNeu(name, { busy: false, err: `解除失败：${e?.message ?? String(e)}` });
+            }
+          }, [api, neuState, setNeu]);
+          // 服务器列表就绪后自动读取一次中立化状态（测试替身的 useEffect 为空实现）。
+          useEffect(() => {
+            for (const s of servers) loadNeuStatus(s.name);
+            // eslint-disable-next-line react-hooks/exhaustive-deps
+          }, [servers.map((s) => s.name).join(',')]);
+
           // ---- v0.1.11 加密口令（官方 Credentials；保存成功才清空输入，失败保留） ----
           const setPassphrase = useCallback(async () => {
             const value = passState.input;
@@ -600,7 +737,7 @@ window.__ModuleLoader__.load({
               !adding && h(Btn, {
                 onClick: () => {
                   setEditingName(null);
-                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '' });
+                  setDraft({ name: '', host: '', user: 'root', keyPath: '', sshConfigAlias: '', pinnedFingerprint: '', dbName: '' });
                   setAdding(true); setSaveErr('');
                 },
               }, t('server.add')),
@@ -646,6 +783,13 @@ window.__ModuleLoader__.load({
                   onChange: (e) => setDraft({ ...draft, pinnedFingerprint: e.target.value }),
                   style: inputStyle,
                 }),
+                h('input', {
+                  value: draft.dbName ?? '',
+                  placeholder: '数据库名（留空则自动发现：dbfilter → db_name → 唯一业务库）',
+                  'aria-label': '数据库名',
+                  onChange: (e) => setDraft({ ...draft, dbName: e.target.value }),
+                  style: inputStyle,
+                }),
                 h('div', { style: { display: 'flex', gap: 8, marginTop: 4 } },
                   h(Btn, {
                     disabled: !draft.name.trim() || !draft.host.trim(),
@@ -658,10 +802,15 @@ window.__ModuleLoader__.load({
                       }
                       const existing = editingName ? servers.find((s) => s.name === editingName) : null;
                       const nextServer = {
+                        // 保留既有服务器的其它字段（odooContainer/pgContainer/dataPath 等），
+                        // 避免「编辑只为填库名」却把其它配置清空。
+                        ...(existing ?? {}),
                         name, host, port: existing?.port ?? 22,
                         user: draft.user.trim() || 'root',
                         keyPath: draft.keyPath.trim(),
                         sshConfigAlias: draft.sshConfigAlias.trim(),
+                        // v0.1.14：目标库名。留空则从 dbfilter 解析；两处都没有时恢复会明确拒绝。
+                        dbName: (draft.dbName ?? '').trim(),
                         // 编辑时保留已固化指纹（除非用户明确清空/修改），避免误删信任
                         pinnedFingerprint: draft.pinnedFingerprint.trim()
                           || (existing?.pinnedFingerprint ?? ''),
@@ -672,7 +821,7 @@ window.__ModuleLoader__.load({
                       await saveServers(next);
                       setDraft({
                         name: '', host: '', user: 'root', keyPath: '',
-                        sshConfigAlias: '', pinnedFingerprint: '',
+                        sshConfigAlias: '', pinnedFingerprint: '', dbName: '',
                       });
                       setAdding(false);
                       setEditingName(null);
@@ -712,6 +861,19 @@ window.__ModuleLoader__.load({
                       }),
                     }, busy[s.name] ? '…' : t('server.test')),
                     h(Btn, {
+                      disabled: !!busy[s.name],
+                      onClick: () => call(s.name, async (api) => {
+                        setOne(s.name, '正在发现库名...');
+                        const { result, autoPersistedDbName } = await api('/discover', { server: s.name });
+                        const inst = result?.instances?.[0];
+                        const found = autoPersistedDbName || inst?.dbName || '';
+                        const why = inst?.dbNameDiscovery?.reason;
+                        setOne(s.name, found
+                          ? `发现库名：${found}${autoPersistedDbName ? '（已保存）' : ''}`
+                          : `未能自动发现库名${why ? `（${why}）` : ''}，请手工填写`);
+                      }),
+                    }, busy[s.name] ? '…' : '发现库名'),
+                    h(Btn, {
                       onClick: () => patchTrust(s.name, {
                         open: !(trust[s.name]?.open),
                         keyPath: trust[s.name]?.keyPath ?? s.keyPath ?? '',
@@ -724,6 +886,7 @@ window.__ModuleLoader__.load({
                           name: s.name, host: s.host ?? '', user: s.user ?? 'root',
                           keyPath: s.keyPath ?? '', sshConfigAlias: s.sshConfigAlias ?? '',
                           pinnedFingerprint: s.pinnedFingerprint ?? '',
+                          dbName: s.dbName ?? '',
                         });
                         setAdding(true); setSaveErr('');
                       },
@@ -811,9 +974,21 @@ window.__ModuleLoader__.load({
                   onClick: () => call(s.name, async (api) => {
                     setOne(s.name, 'backing up...');
                     const { result } = await api('/backup', { server: s.name });
-                    setOne(s.name, result?.ok
-                      ? `完成：${result.localPath}（${((result.bytes ?? 0) / 1048576).toFixed(1)} MB）`
-                      : `失败：${result?.error ?? '未知错误'}`);
+                    if (result?.ok) {
+                      setOne(s.name, `完成：${result.localPath}（${((result.bytes ?? 0) / 1048576).toFixed(1)} MB）`);
+                      // v0.1.14：仅在备份后端确认成功后回填最终加密包路径。
+                      // Host 侧已用 completed.json + 存在性 + 加密格式三重校验；
+                      // 回填失败绝不影响“备份成功”状态，也绝不覆盖已有恢复路径。
+                      try {
+                        const last = await api('/last-backup');
+                        if (last?.ok && last.localPath) {
+                          setRestorePath((m) => ({ ...m, [s.name]: last.localPath }));
+                        }
+                      } catch { /* 忽略：回填是便利功能，不是备份成功条件 */ }
+                    } else {
+                      // 失败/未完成：不回填、不触碰原恢复路径
+                      setOne(s.name, `失败：${result?.error ?? '未知错误'}`);
+                    }
                   }),
                 }, busy[s.name] ? '…' : `${t('backup.start')} ${s.name}`),
                 h(Status, { text: status[s.name] }),
@@ -828,13 +1003,65 @@ window.__ModuleLoader__.load({
                 `解密口令：${!passState.loaded ? '读取中…' : (passState.configured ? '使用已配置的备份加密口令（与备份共用，在「备份」页管理）' : '未配置 — 恢复加密包将被拒绝，请先在「备份」页设置')}`),
               h('p', { style: { fontSize: 12, color: T.warn } },
                 '⚠️ 切换期间站点约 2–5 分钟不可用；切换后正式环境回到备份包对应的业务时间点。'),
+              // v0.1.14：路径易用性提示（真机踩坑：粘贴带引号路径 / 误选分片目录明文 .tar）
+              h('p', { style: { fontSize: 12, color: T.text2, margin: '6px 0 0' } },
+                '正确格式：备份根目录下的最终加密产物 .tar.enc（备份成功后会在此自动回填）。'
+                + '不要选择分片目录（<backupId>/）中的明文 .tar 中间文件——它会被默认拒绝恢复。'
+                + '执行恢复前请再次确认备份时间点与目标数据库：切换后正式环境将回到该时间点。'),
+              // v0.1.14：签名密钥隔离（默认开启）
+              h('div', { style: { padding: 12, marginBottom: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
+                h('label', { style: { display: 'flex', gap: 8, alignItems: 'flex-start', cursor: 'pointer' } },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: rotateSecret,
+                    'aria-label': '恢复后重新生成数据库签名密钥',
+                    onChange: (e) => setRotateSecret(e.target.checked),
+                    style: { marginTop: 2 },
+                  }),
+                  h('div', null,
+                    h('div', { style: { fontSize: 13, fontWeight: 600 } }, '恢复后重新生成数据库签名密钥'),
+                    h('p', { style: { fontSize: 12, color: T.text2, margin: '4px 0 0' } },
+                      '备份包带着来源库的 database.secret。开启后只重签**目标库**这一个密钥，'
+                      + '使恢复环境与来源环境不再共用签名密钥；生产库不受影响（生产保留原密钥，其已发出的链接照常有效）。'
+                      + '目标库中少量使用旧密钥签发的签名链接与令牌可能失效（如部分 Portal 访问链接、退订链接）——这正是环境隔离的目的。'
+                      + '若确需保留原签名链接，可取消勾选。'),
+                  ),
+                ),
+                rotateSecret
+                  ? h('div', { style: { fontSize: 12, marginTop: 6, color: T.text2 } }, '将重签（推荐）')
+                  : h('div', { style: { fontSize: 12, marginTop: 6, color: T.warn } }, '将保留备份中的原密钥（与来源环境共用密钥）'),
+              ),
+              // v0.1.14：恢复目标域名（避免与来源站点抢同一域名）
+              h('div', { style: { padding: 12, marginBottom: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
+                h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, '恢复目标域名'),
+                h('p', { style: { fontSize: 12, color: T.text2, margin: '0 0 8px' } },
+                  '恢复后会把目标站点的 website.domain 与 web.base.url 改成这里填的域名，避免与来源站点抢同一域名。'
+                  + '留空则自动使用服务器名（仅当其形如 odoo.example.com）；服务器名不是主机名时不做域名切换。'),
+                h('div', { style: { display: 'flex', gap: 8, alignItems: 'center' } },
+                  h('input', {
+                    value: domainState.input,
+                    placeholder: domainState.value ? `当前：${domainState.value}` : '留空 = 用服务器名',
+                    'aria-label': '恢复目标域名',
+                    onChange: (e) => setDomainState((s) => ({ ...s, input: e.target.value })),
+                    style: inputStyle,
+                  }),
+                  h(Btn, {
+                    disabled: domainState.busy,
+                    onClick: saveRestoreDomain,
+                  }, domainState.busy ? '…' : (domainState.value ? '更新域名' : '保存域名')),
+                ),
+                h('div', { style: { fontSize: 12, marginTop: 4, color: T.text2 } },
+                  `当前：${domainState.value || '自动（使用服务器名）'}`),
+                domainState.err && h(Status, { text: domainState.err, tone: 'error' }),
+                domainState.ok && h(Status, { text: domainState.ok }),
+              ),
               // v0.1.13：真实进度条（恢复）与服务器级互斥提示（§14.3 / §17.1）
               taskLocked && h(Status, { text: busyHint, tone: 'warn' }),
               hostTask && hostTask.kind === 'restore' && h(TaskProgress, { task: hostTask, netError }),
               servers.map((s) => h('div', { key: s.name, style: { marginBottom: 8 } },
                 h('input', {
                   value: restorePath[s.name] ?? '',
-                  placeholder: '备份包完整路径（如 K:\\Backup\\odoo\\xxx.tgz）',
+                  placeholder: '备份包完整路径（如 K:\\Backup\\odoo\\20261109\\odoo-backup-20261109-103541.tar.enc）',
                   'aria-label': `恢复包路径 ${s.name}`,
                   onChange: (e) => setRestorePath((m) => ({ ...m, [s.name]: e.target.value })),
                   style: inputStyle,
@@ -844,25 +1071,131 @@ window.__ModuleLoader__.load({
                   disabled: (!!busy[s.name] || !(restorePath[s.name] ?? '').trim()) || (taskLocked && true),
                   onClick: () => {
                     // 同样不能用 window.prompt/confirm：Electron 不实现它们。
-                    const pkg = (restorePath[s.name] ?? '').trim();
+                    // v0.1.14：与 Host 同一规范化规则（去首尾空白、去一对完整引号、斜杠统一）
+                    const pkg = normalizeRestorePath(restorePath[s.name]);
                     if (!pkg) { setOne(s.name, '请先填写备份包完整路径'); return; }
                     call(s.name, async (api) => {
                       setOne(s.name, '预检中...');
                       const pre = await api('/precheck', { server: s.name, packagePath: pkg });
-                      setOne(s.name, '恢复中（此过程较久，请勿关闭页面）...');
+                      const sourceText = pre.sourceDbName
+                        ? `来源库：${pre.sourceDbName}`
+                        : `来源库：未能读取${pre.sourceReason ? `（${pre.sourceReason}）` : ''}`;
+                      const targetText = pre.targetDbName
+                        ? `目标库：${pre.targetDbName}${pre.dbNameSource ? `（${pre.dbNameSource}）` : ''}`
+                        : `目标库：未能可靠确定。${pre.targetReason || '请在「服务器」页填写数据库名后重试。'}`;
+                      const conflictText = pre.conflict === 'same-name'
+                        ? ' 名称相同只作提示：恢复仍只覆盖目标服务器上的该库，不会用源库名决定覆盖位置。'
+                        : '';
+                      if (!pre.targetDbName) {
+                        setOne(s.name, `${sourceText}；${targetText}`);
+                        return;
+                      }
+                      setOne(s.name, `${sourceText}；${targetText}${conflictText} 恢复中（此过程较久，请勿关闭页面）...`);
                       const { result } = await api('/restore', {
                         server: s.name,
                         packagePath: pkg,
                         confirmToken: pre.confirmToken,
+                        rotateSecret,
                       });
-                      setOne(s.name, result?.ok
-                        ? '恢复成功'
-                        : `失败：${result?.error ?? '未知错误'}`);
+                      if (result?.ok) {
+                        const sr = result.secretRotation;
+                        const secretText = sr?.applied
+                          ? '签名密钥已重签（生产库不受影响）'
+                          : (sr?.skipped ? `签名密钥未重签：${sr.reason ?? '已跳过'}` : '签名密钥重签状态未知');
+                        setOne(s.name, `恢复成功；${secretText}`);
+                      } else {
+                        setOne(s.name, `失败：${result?.error ?? '未知错误'}`);
+                      }
                     });
                   },
                 }, busy[s.name] ? '…' : `${t('restore.start')} ${s.name}`),
                 h(Status, { text: status[s.name] }),
               )),
+              // v0.1.14 收尾：中立化状态（恢复完成后决定该环境是否接管生产）
+              h('div', { style: { padding: 12, marginTop: 12, border: `1px solid ${T.border}`, borderRadius: 6, background: T.bg2 } },
+                h('div', { style: { fontSize: 13, fontWeight: 600, marginBottom: 6 } }, '中立化状态（恢复后是否接管生产）'),
+                h('p', { style: { fontSize: 12, color: T.text2, margin: '0 0 8px' } },
+                  '中立化（neutralize）会把恢复库的邮件外发、定时任务、支付提供商全部停掉，'
+                  + '并写入 database.is_neutralized 标记——用于「只做验证、不接管生产」的恢复。'
+                  + '确认该环境要正式对外服务时，在此解除中立化，无需再登服务器。'),
+                // 静态安全提示：点「解除」之前就要看到，不依赖后端 warnings 是否返回
+                h('div', { style: { fontSize: 12, color: T.warn, margin: '0 0 8px', lineHeight: 1.7 } },
+                  h('div', null, '· 解除会启用全部定时任务（含自动发信）并恢复邮件服务器；'),
+                  h('div', null, '· 中立化时已清空 SMTP 用户名与密码且不可还原，解除后必须到 Odoo 后台重新填写；'),
+                  h('div', null, '· 支付提供商不会被自动启用——留空即全部保持禁用，需你显式给出 code；'),
+                  h('div', null, '· 该操作不可逆，请确认此环境确需接管生产。')),
+                servers.map((s) => {
+                  const st = neuState[s.name] ?? {};
+                  const stat = st.status;
+                  const showWarn = Array.isArray(st.warnings) && st.warnings.length > 0;
+                  return h('div', { key: s.name, style: { padding: 10, marginBottom: 8, border: `1px solid ${T.border}`, borderRadius: 6 } },
+                    h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 } },
+                      h('div', { style: { fontSize: 13, fontWeight: 600, flex: 1 } }, s.name),
+                      h(Btn, { disabled: !!st.busy, onClick: () => loadNeuStatus(s.name) },
+                        st.busy ? '…' : '刷新状态'),
+                    ),
+                    !stat && !st.err && h('div', { style: { fontSize: 12, color: T.text2 } },
+                      st.busy ? '读取中…' : '尚未读取状态'),
+                    stat && h('div', { style: { fontSize: 12, color: T.text2, lineHeight: 1.7 } },
+                      h('div', null,
+                        '目标库：', h('b', null, stat.dbName || '未知'),
+                        '　中立化：', h('b', null, stat.neutralized ? '是（已隔离）' : '否'),
+                        stat.flag === false && stat.neutralized ? '（标记缺失但仍有停用项）' : ''),
+                      h('div', null,
+                        `定时任务：启用 ${stat.cronActive ?? 0} / 停用 ${stat.cronDisabled ?? 0}`),
+                      h('div', null,
+                        `邮件服务器：占位 ${stat.mailPlaceholder ?? 0} 个；真实启用 ${stat.mailRealActive ?? 0} 个`
+                        + (stat.credentialsLost ? '（凭据已被清空）' : '')),
+                      h('div', null,
+                        `支付提供商：启用 ${stat.paymentEnabled ?? 0} / 禁用 ${stat.paymentDisabled ?? 0}`),
+                    ),
+                    h('div', { style: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
+                      h(Btn, { disabled: !!st.busy, onClick: () => keepNeutralize(s.name) }, '保持中立化'),
+                      h(Btn, {
+                        tone: 'danger',
+                        disabled: !!st.busy || showWarn,
+                        onClick: () => precheckRelease(s.name),
+                      }, '解除中立化（接管生产）'),
+                    ),
+                    // 二次确认：先列出全部不可逆提示，再由用户点「确认解除」
+                    showWarn && h('div', {
+                      style: { marginTop: 8, padding: 10, border: `1px solid ${T.warn}`, borderRadius: 6 },
+                    },
+                    h('div', { style: { fontSize: 12, fontWeight: 600, color: T.warn, marginBottom: 6 } },
+                      '解除前请确认以下不可逆事项：'),
+                    st.warnings.map((w, i) => h('div', { key: i, style: { fontSize: 12, color: T.text2, marginBottom: 4 } },
+                      `${i + 1}. ${w}`)),
+                    h('div', { style: { fontSize: 12, color: T.text2, margin: '8px 0 4px' } },
+                      '要启用的支付提供商 code（逗号分隔；留空 = 全部保持禁用，绝不自动启用）'),
+                    h('input', {
+                      value: st.codes ?? '',
+                      placeholder: '留空 = 全部保持禁用（如 alipay, airwallex）',
+                      'aria-label': `支付提供商 code ${s.name}`,
+                      onChange: (e) => setNeu(s.name, { codes: e.target.value }),
+                      style: inputStyle,
+                    }),
+                    h('div', { style: { display: 'flex', gap: 8, marginTop: 8 } },
+                      h(Btn, { tone: 'danger', disabled: !!st.busy, onClick: () => confirmRelease(s.name) },
+                        st.busy ? '…' : '确认解除'),
+                      h(Btn, { disabled: !!st.busy, onClick: () => setNeu(s.name, { warnings: null, confirmToken: null }) },
+                        '取消'),
+                    )),
+                    st.result && h('div', { style: { fontSize: 12, marginTop: 8, color: T.text2, lineHeight: 1.7 } },
+                      h('div', null, `结果：applied=${st.result.applied ? 'true' : 'false'}`),
+                      h('div', null, `标记已删除：${st.result.flagDeleted ? '是' : '否'}；占位邮件服务器已删除：${st.result.placeholderDeleted ? '是' : '否'}`),
+                      h('div', null, `已启用定时任务：${st.result.cronEnabled ?? 0} 个；重新启用的真实邮件服务器：${st.result.mailReactivated ?? 0} 个`),
+                      h('div', null, `支付提供商启用：${st.result.paymentEnabled ?? 0} 个`),
+                      h('div', { style: { color: T.warn } },
+                        st.result.restartRequired
+                          ? `restartRequired：需重启 Odoo 容器（已尝试自动重启：${st.result.restarted ? '是' : '否'}），并确认 max_cron_threads ≥ 1`
+                          : ''),
+                      Array.isArray(st.result.warnings) && st.result.warnings.map((w, i) => h('div', { key: i, style: { color: T.warn } }, `· ${w}`)),
+                    ),
+                    st.okText && h(Status, { text: st.okText }),
+                    st.err && h(Status, { text: st.err, tone: 'error' }),
+                  );
+                }),
+              ),
             ),
           );
         }
@@ -877,20 +1210,37 @@ window.__ModuleLoader__.load({
           pkgName,               // 包名兜底
         ];
         let scope;
-        let disposeCard = null;
+        let disposeSection = null;
+        // v0.1.14 UI 宿主迁移：整个操作界面挂在 DSH 原生设置页（settings.section），
+        // 不再是「已安装插件」里的 plugins.bundle.config 卡片。
         // 渲染器按条目缓存 inject() 的返回值，因此 scope 晚到时必须
         // 「注销 + 重新注册」，否则 inject 不会重新求值。
-        const mountCard = () => {
-          try { disposeCard?.(); } catch (_) { /* 旧 disposer 失败不影响重挂 */ }
-          disposeCard = ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
-            name: 'plugins.bundle.config',
-            key: '@local/dsh-odoo19-backup',
-            view: 'page',
-            inject: () => ({ scope, locale }),
-          }, OdooBackupPanel)) ?? null;
+        const mountSection = () => {
+          try { disposeSection?.(); } catch (_) { /* 旧 disposer 失败不影响重挂 */ }
+          disposeSection = ctx.slots.inject('settings.section', () => {
+            // 先注册图标、再注册页面：测试替身以「最后一次 register」为观察对象时，
+            // 观察到的仍是页面组件（真实 ledger 是两份独立条目，顺序无关）。
+            const disposeIcon = ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+              name: 'settings.section.icon',
+              id: 'odoo-backup',
+              order: 210,
+              label: () => t('settings.nav'),
+            }, OdooNavIcon)) ?? null;
+            const disposePage = ctx.slots.register({
+              name: 'settings.section',
+              id: 'odoo-backup',
+              order: 210,
+              label: () => t('settings.nav'),
+              inject: () => ({ scope, locale }),
+            }, OdooBackupPanel);
+            return () => {
+              try { disposePage?.(); } catch (_) { /* ignore */ }
+              try { disposeIcon?.(); } catch (_) { /* ignore */ }
+            };
+          }) ?? null;
         };
-        // 无条件注册：配置服务缺席/异常时卡片仍在，由组件显示可见提示。
-        mountCard();
+        // 无条件注册：配置服务缺席/异常时页面仍在，由组件显示可见提示。
+        mountSection();
 
         // 以下全部包在 try/catch 里：任何失败都只影响 scope，不影响卡片。
         let forms = null;
@@ -911,11 +1261,11 @@ window.__ModuleLoader__.load({
           try {
             forms = ctx.get('configForms') ?? null;
             if (!forms) return false;
-            if (setScope(servedNamespaces())) { mountCard(); return true; }
+            if (setScope(servedNamespaces())) { mountSection(); return true; }
             if (typeof forms.whileServed === 'function') {
               ctx.effect(() => {
                 const off = forms.whileServed(NAMESPACE_CANDIDATES, (served) => {
-                  if (setScope(served)) mountCard();
+                  if (setScope(served)) mountSection();
                   return () => {};
                 });
                 return () => { try { off?.(); } catch (_) {} };
@@ -935,10 +1285,10 @@ window.__ModuleLoader__.load({
             ctx.inject(['configForms'], (sctx) => {
               try {
                 forms = sctx.configForms;
-                if (setScope(servedNamespaces())) mountCard();
+                if (setScope(servedNamespaces())) mountSection();
                 if (typeof forms?.whileServed === 'function') {
                   const off = forms.whileServed(NAMESPACE_CANDIDATES, (served) => {
-                    if (setScope(served)) mountCard();
+                    if (setScope(served)) mountSection();
                     return () => {};
                   });
                   return () => { try { off?.(); } catch (_) {} };
@@ -957,7 +1307,7 @@ window.__ModuleLoader__.load({
         const diagTimer = setTimeout(() => {
           if (!scope) {
             console.warn('[dsh-odoo19-backup] configForms 未提供或未服务本插件的命名空间：'
-              + '配置卡片仍显示，但无法读写配置。请确认 dsh.client.inject 已声明 '
+              + '设置页仍显示，但无法读写配置。请确认 dsh.client.inject 已声明 '
               + '@deepseek-ai/dsh-client-ui-settings，并重启 DSH / 硬刷新页面。');
           }
         }, 5000);

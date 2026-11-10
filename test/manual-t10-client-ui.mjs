@@ -21,7 +21,8 @@ console.log('=== A. Client 静态结构 ===');
 
 chk('模块 id 正确', /id:\s*'@local\/dsh-odoo-backup'/.test(src));
 chk('注入 slots 与 locale', /inject:\s*\['slots',\s*'locale'\]/.test(src));
-chk('注册到 plugins.bundle.config', /slots\.inject\('plugins\.bundle\.config'/.test(src));
+chk('注册到原生设置页 settings.section（v0.1.14 宿主迁移）', /slots\.inject\('settings\.section'/.test(src));
+chk('不再注册旧入口 plugins.bundle.config', !/slots\.inject\('plugins\.bundle\.config'/.test(src));
 chk('注册 key 为包名', /key:\s*'@local\/dsh-odoo-backup'/.test(src));
 chk('view 为 page', /view:\s*'page'/.test(src));
 

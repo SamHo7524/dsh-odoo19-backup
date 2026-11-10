@@ -4,6 +4,7 @@
     "description": "远程备份 Odoo 19（数据库 + filestore + addons + 运行时依赖 + 配置）并安全恢复到任意服务器。恢复走临时库验证、停机切换与失败回滚。"
   },
   "ui": {
+    "settings.nav": "Odoo19 备份与恢复",
     "tab.servers": "服务器",
     "tab.backup": "备份",
     "tab.restore": "恢复",

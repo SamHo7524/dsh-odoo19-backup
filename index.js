@@ -1,10 +1,13 @@
 import z from '@deepseek-ai/schemastery';
 import { readFile } from 'node:fs/promises';
-import { createTokenStore } from './lib/tokens.js';
+import { createTokenStore, NEUTRALIZE_BOUND_KEYS } from './lib/tokens.js';
 import { readState, patchState } from './lib/task-state.js';
 import { readLock, inspectLock, confirmStaleLock, releaseLock } from './lib/server-lock.js';
 import { resolveBackupDirectory, validateDirectory, DEFAULT_BACKUP_DIRECTORY } from './lib/backup-directory.js';
 import { createService } from './lib/service.js';
+import { normalizeRestorePath } from './lib/restore-path.js';
+import { resolveLastBackup } from './lib/completed-package.js';
+import { isHostname } from './lib/site-domain.js';
 import { createOdooBackupTool, createOdooRestoreTool } from './lib/tools.js';
 import { scanHostKey, pinHostKey } from './lib/knownhosts.js';
 import {
@@ -64,6 +67,11 @@ export const Config = z.object({
     .boolean()
     .default(false)
     .description('允许恢复未加密的旧版备份包（不推荐；每次恢复仍需显式确认）'),
+  restoreDomain: z
+    .string()
+    .default('')
+    .description('恢复后使用的站点域名；留空=自动使用服务器名（仅当其为主机名）')
+    .volatile(),
 });
 
 /** volatile 字段解析为 { get(): T } 活引用；读取时解包为普通值。 */
@@ -100,6 +108,8 @@ export function apply(ctx, config) {
     },
   });
   const tokenStore = createTokenStore();
+  // v0.1.14 收尾：解除中立化用独立绑定维度（server + action + dbName），与恢复 token 互不串用。
+  const neutralizeTokenStore = createTokenStore({ boundKeys: NEUTRALIZE_BOUND_KEYS });
 
   const backupTool = createOdooBackupTool({ config, service });
   const restoreTool = createOdooRestoreTool({ config, service, tokenStore });
@@ -115,7 +125,7 @@ export function apply(ctx, config) {
         kind: 'prefix',
         path: '/odoo-backup',
         handler: (req, res) => handleUiRequest({
-          req, res, config, service, tokenStore,
+          req, res, config, service, tokenStore, neutralizeTokenStore,
           // Host 侧的官方设置服务：写入 profile patch，volatile 字段运行时可写。
           settings: webCtx.settings,
           // Host 侧的官方凭证服务：备份加密口令只存 Credentials（v0.1.11）。
@@ -150,7 +160,14 @@ function defaultServerId(config) {
   return Array.isArray(list) && list[0]?.name ? list[0].name : null;
 }
 
-async function handleUiRequest({ req, res, config, service, tokenStore, settings, entryId, readPublicKey, credentials }) {
+/** 恢复目标域名：空值合法（= 自动用服务器名），非空必须是主机名。 */
+function isValidRestoreDomain(value) {
+  const v = String(value ?? '').trim();
+  if (!v) return true;
+  return isHostname(v);
+}
+
+async function handleUiRequest({ req, res, config, service, tokenStore, neutralizeTokenStore, settings, entryId, readPublicKey, credentials }) {
   const send = (status, body) => {
     res.statusCode = status;
     res.setHeader('content-type', 'application/json; charset=utf-8');
@@ -189,6 +206,23 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
 
   const url = new URL(req.url ?? '/', 'http://localhost');
   const route = url.pathname.replace(/^\/odoo-backup/, '') || '/';
+
+  /**
+   * 自动识别成功且该服务器还没手工填库名时，把目标库名写回配置。
+   * 只接受发现结果里的目标库名；调用方不得把备份包源库名传进来。
+   */
+  async function persistAutoDbName(serverName, discovery) {
+    if (!settings || !discovery?.ok || !discovery.dbName) return null;
+    if (discovery.source === 'config' || discovery.confidence === 'explicit') return null;
+    const list = unwrapVolatile(config.servers) ?? [];
+    const current = list.find((s) => s.name === serverName);
+    if (!current || String(current.dbName ?? '').trim()) return null;
+    const next = list.map((s) => (
+      s.name === serverName ? { ...s, dbName: discovery.dbName } : s
+    ));
+    await settings.update(entryId, { servers: next });
+    return discovery.dbName;
+  }
 
   try {
     if (route === '/passphrase-status') {
@@ -300,7 +334,10 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
       return send(200, { ok: true, result: await service.test(body.server) });
     }
     if (route === '/discover') {
-      return send(200, { ok: true, result: await service.discover(body.server) });
+      const result = await service.discover(body.server);
+      const discovery = result?.instances?.[0]?.dbNameDiscovery ?? null;
+      const autoPersistedDbName = await persistAutoDbName(body.server, discovery);
+      return send(200, { ok: true, result, autoPersistedDbName });
     }
     if (route === '/backup') {
       // 自愈通道：handler 每次请求都有 webCtx.credentials，补挂给 service
@@ -310,6 +347,31 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
     }
     if (route === '/status') {
       return send(200, { ok: true, result: await service.status() });
+    }
+    if (route === '/restore-domain') {
+      // v0.1.14：恢复后使用的站点域名（留空=自动用服务器名）。
+      // 只存配置，域名在恢复执行时由 Host 侧读取，绝不由前端请求体直接注入。
+      if (req.method === 'POST') {
+        const domain = String(body.domain ?? '').trim();
+        if (!isValidRestoreDomain(domain)) {
+          throw new Error(`域名不合法：${domain}（只接受形如 odoo.example.com 的主机名；留空表示自动使用服务器名）`);
+        }
+        if (!settings || typeof settings.update !== 'function') {
+          throw new Error('Host 设置服务不可用，无法保存恢复目标域名');
+        }
+        await settings.update(entryId, { restoreDomain: domain });
+        return send(200, { ok: true, domain, mode: domain ? 'fixed' : 'auto' });
+      }
+      const domain = String(unwrapVolatile(config?.restoreDomain) ?? '').trim();
+      return send(200, { ok: true, domain, mode: domain ? 'fixed' : 'auto' });
+    }
+    if (route === '/last-backup') {
+      // v0.1.14：回填恢复输入框用的权威最终包路径。
+      // 只依据磁盘 completed.json + 文件存在 + 加密格式校验，绝不信任前端传入路径。
+      const r = await resolveLastBackup(stateDirOf(config));
+      return send(200, r.ok
+        ? { ok: true, localPath: r.localPath }
+        : { ok: false, reason: r.reason });
     }
     if (route === '/backup-directory') {
       // v0.1.13 §3.1 / §14.1：显示/验证/修改本地备份目录。
@@ -372,30 +434,112 @@ async function handleUiRequest({ req, res, config, service, tokenStore, settings
     }
     if (route === '/precheck') {
       if (!body.server) throw new Error('缺少 server 参数');
-      if (!body.packagePath) throw new Error('缺少 packagePath 参数');
+      const packagePath = normalizeRestorePath(body.packagePath);
+      if (!packagePath) throw new Error('缺少 packagePath 参数');
       const serverList = unwrapVolatile(config.servers) ?? [];
       if (!serverList.some((s) => s.name === body.server)) {
         throw new Error(`未找到服务器: ${body.server}`);
       }
       const neutralize = Boolean(body.neutralize);
+      if (credentials) service.attachCredentials?.(credentials);
+      const preview = await service.inspectRestore(body.server, packagePath);
+      const autoPersistedDbName = await persistAutoDbName(body.server, preview?.discovery);
       const token = tokenStore.create({
-        server: body.server, packagePath: body.packagePath, neutralize,
+        server: body.server, packagePath, neutralize,
       });
-      return send(200, { ok: true, confirmToken: token, expiresInSeconds: 300 });
+      return send(200, {
+        ok: true,
+        confirmToken: token,
+        expiresInSeconds: 300,
+        sourceDbName: preview?.sourceDbName ?? null,
+        targetDbName: preview?.targetDbName ?? null,
+        conflict: preview?.conflict ?? null,
+        sourceReason: preview?.sourceReason ?? null,
+        targetReason: preview?.targetReason ?? null,
+        dbNameSource: preview?.discovery?.source ?? null,
+        autoPersistedDbName,
+      });
     }
     if (route === '/restore') {
       if (credentials) service.attachCredentials?.(credentials);
       if (!body.confirmToken) throw new Error('缺少 confirmToken，请先预检');
+      const packagePath = normalizeRestorePath(body.packagePath);
       tokenStore.verify(body.confirmToken, {
         server: body.server,
-        packagePath: body.packagePath,
+        packagePath,
         neutralize: Boolean(body.neutralize),
       });
       return send(200, {
         ok: true,
-        result: await service.restore(body.server, null, body.packagePath, {
+        result: await service.restore(body.server, null, packagePath, {
           neutralize: Boolean(body.neutralize),
+          // 默认开启；显式传 false 才关闭（保留备份原密钥）。
+          rotateSecret: body.rotateSecret !== false,
         }),
+      });
+    }
+    // ---- v0.1.14 收尾：中立化状态管理（保持 / 解除）----
+    if (route === '/neutralize-status') {
+      if (!body.server) throw new Error('缺少 server 参数');
+      return send(200, { ok: true, ...(await service.neutralizeStatus(body.server)) });
+    }
+    if (route === '/neutralize-precheck') {
+      if (!body.server) throw new Error('缺少 server 参数');
+      if (body.action !== 'release') throw new Error('预检仅用于解除中立化（action=release）');
+      const status = await service.neutralizeStatus(body.server);
+      if (!status?.ok) throw new Error(status?.reason ?? '无法读取目标库中立化状态');
+      if (!status.neutralized) {
+        return send(200, {
+          ok: true,
+          alreadyReleased: true,
+          confirmToken: null,
+          status,
+          warnings: ['目标库当前未处于中立化状态，无需解除。'],
+        });
+      }
+      const token = neutralizeTokenStore.create({
+        server: body.server, action: 'release', dbName: status.dbName,
+      });
+      return send(200, {
+        ok: true,
+        alreadyReleased: false,
+        confirmToken: token,
+        expiresInSeconds: 300,
+        status,
+        warnings: [
+          `将启用 ${status.cronDisabled} 个当前停用的定时任务（解除后 cron 会立即开始运行，含自动发信）。`,
+          '中立化时已清空原邮件服务器的 SMTP 用户名与密码，且无法从数据库还原——解除后必须到 Odoo 后台「设置 → 邮件服务器」重新填写。',
+          status.paymentDisabled > 0
+            ? `支付提供商当前全部禁用（${status.paymentDisabled} 个）。如未指定启用名单，解除后仍保持禁用；在线收款请先核对凭据再手动启用。`
+            : '支付提供商无需处理。',
+          '中立化期间产生的未发邮件（state=exception/outgoing）将被清除，避免恢复后批量外发。',
+          '解除后需确认 Odoo 配置 max_cron_threads ≥ 1，否则定时任务不会真正执行；本插件不修改 conf。',
+          '该操作不可逆。请确认此环境确需接管生产（对外服务、收款、发信）。',
+        ],
+      });
+    }
+    if (route === '/neutralize-apply') {
+      if (!body.server) throw new Error('缺少 server 参数');
+      const action = String(body.action ?? '');
+      if (action !== 'keep' && action !== 'release') {
+        throw new Error('action 必须是 keep 或 release');
+      }
+      if (action === 'release') {
+        if (!body.confirmToken) throw new Error('缺少 confirmToken，请先预检解除中立化');
+        // 绑定维度：server + action + dbName，一次性 5 分钟。
+        const status = await service.neutralizeStatus(body.server);
+        neutralizeTokenStore.verify(body.confirmToken, {
+          server: body.server, action: 'release', dbName: status?.dbName,
+        });
+      }
+      const codes = Array.isArray(body.enablePaymentCodes)
+        ? body.enablePaymentCodes
+        : (typeof body.enablePaymentCodes === 'string'
+          ? body.enablePaymentCodes.split(',').map((s) => s.trim()).filter(Boolean)
+          : []);
+      return send(200, {
+        ok: true,
+        result: await service.applyNeutralize(body.server, action, { enablePaymentCodes: codes }),
       });
     }
     return send(404, { ok: false, error: `未知路由: ${route}` });

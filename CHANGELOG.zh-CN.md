@@ -8,6 +8,110 @@
 
 ---
 
+## [0.1.14] — 2026-11-09
+
+**恢复包路径易用性修复：粘贴带引号路径不再报「备份包不存在」，备份成功后自动回填最终 `.tar.enc` 路径。**
+
+**界面宿主迁移：整个操作界面从「已安装插件」的配置卡片，迁到 DSH 原生设置页的独立页面。**
+
+### 恢复后中立化状态管理：保持 / 解除（用户裁决 2026-11-10）
+- **背景**：恢复出来的库若在 Odoo 里做过 neutralize（或恢复时勾选中立化），邮件外发、定时任务、支付提供商全被停掉并写入 `database.is_neutralized`。此前要接管生产必须登服务器手改数据库，闭环断在最后一公里。
+- **能力**：设置页「恢复」页新增**中立化状态卡片**——展示目标库名、是否中立化、cron 启用/停用数、占位与真实邮件服务器数、支付启用/禁用数，并提供**「保持中立化」与「解除中立化（接管生产）」两个按钮**。
+- **安全边界（关键）**：
+  - **解除必须过 confirmToken 闸门**（绑定 `server` + `action` + `dbName`，一次性、5 分钟有效）。「保持」不写库、不触达远端，因此不需要 token。
+  - **解除前先预检**，把全部不可逆事项逐条列在 UI 上，用户再点独立的「确认解除」才提交。不使用 `window.confirm`（Electron 不实现）。
+  - **绝不猜支付提供商**：Odoo 的 `payment/data/neutralize.sql` 只做 `UPDATE payment_provider SET state='disabled'`，不记录原本哪些 enabled，恢复库无法推知。因此**默认全部保持禁用**，只有用户在输入框显式给出 code（逐项 `^[a-z0-9_]{1,64}$` 校验）才启用。
+  - **SMTP 凭据不可还原**：中立化时 `smtp_user`/`smtp_pass` 已被清空，解除后必须人工到 Odoo 后台重填，UI 明确告出。
+  - **启用全部 cron 是既定行为**：`UPDATE ir_cron SET active=true` 会连同原本就 disabled 的一起启用（真机源库 36 启用 / 7 停用），UI 展示将启用的数量并由用户确认。
+  - 解除后自动 `docker restart` 目标 Odoo 容器，并提示确认 `max_cron_threads ≥ 1`（该值在未挂载的 conf 里，插件不改 conf）。
+- **真机验证（只读）**：目标机 `toogel` 状态探针实测 `flag=true`、cron 1/42、占位邮件 1、真实邮件启用 0、支付 0/26，`parseStatus` 解析全对。
+- **测试**：NEU-1..12、NEUSVC-1..7、NEUROUTE-1..8、NEUUI-1..8 全部经 RED→GREEN；全量 551/551。
+
+### 恢复必须部署 addons / pydeps（真机缺陷修复，2026-11-09 第二次恢复失败）
+- **现象**：恢复报 `临时环境验证失败：V6 站点可访问`。数据库已恢复（133 MB）、filestore 已建立，但站点返回 500。
+- **根因**：恢复流程**只检查 addons 权限，从不部署 addons/pydeps**。备份包内明明有 `addons-*.tar.zst`（45 MB）与 `pydeps-*.tar.zst`，却被丢弃。目标机 addons 目录为空 → `website_clarity` 等自建模块缺失 → registry 加载时字段不存在 → `website.layout` 渲染报
+  `AttributeError: 'website' object has no attribute 'clarity_project_id'` → 首页 500。
+- **修复**：
+  - `extractBundle()` 同时抽出 `dump.zip` / `addons-*.tar.zst` / `pydeps-*.tar.zst` 三个组件（原先只抽 dump.zip）。
+  - 新增**阶段 A0 部署组件**，严格位于数据库恢复之前（registry 加载时扫描 addons，代码不在的模块被静默跳过，只在渲染时才 500）。
+  - `detectAddonsPrefix()` 按包内首项判定是否 `--strip-components`：备份用 `tar -C "$ADDONS" -cf - .` → `./` 前缀 → **不 strip**；若为 `addons/` 前缀则 strip 1。
+  - 部署后 `chown -R <容器 uid>:<gid>`、补齐目录执行位（缺执行位会让 Odoo 静默跳过整个模块目录）。
+  - 校验模块数：**为 0 判失败**并中止，绝不带着空 addons 继续做数据库恢复。
+  - zstd 缺失、解压失败、包不存在 → 明确报错，不静默跳过。
+- **真机验证**：真实 45 MB addons 包上传后部署 → 23 个模块、`website_clarity` 就位、`clarity_project_id` 定义存在；重启后 `/`=200(68456) `/shop`=200(292458) `/web/login`=200(39224)，日志无 error。
+
+### 恢复后数据库签名密钥隔离（用户裁决 2026-11-09）
+- **问题**：备份包把来源库的 `database.secret` 一并带到目标库，恢复后两套环境共用同一签名密钥（用于 CSRF token、Portal 访问令牌、退订链接、附件签名）。Odoo 的 `neutralize.sql` **不会**重签它。
+- **能力**：新增「恢复后重新生成数据库签名密钥」，**默认开启**，允许用户主动取消。
+- **作用范围**：只改目标库那一个 `database.secret` 行；生产库不读不写，其已发出的链接照常有效。失效的仅是目标库中少量用旧密钥签发的令牌——这正是环境隔离的目的。
+- **随机性**：用 PostgreSQL `gen_random_uuid()`（PG13+ 内建强随机），**不用**时间戳/`random()`/库名派生。
+- **时机**：阶段 D 停机切换之后、阶段 E 最终验证之前（目标库已是正式库、站点对外开放前）。
+- **失败处理**：`rc≠0`、`changed=f`、密钥为空、无 `database.secret` 行，一律判失败并抛出 → 走既有回滚，恢复结果如实反映，绝不静默显示成功。
+- **不记录明文**：脚本只回报 `before_len`/`after_len`/`changed`；结果对象、状态文件、UI 均不含密钥。
+- **未做**（按裁决）：不重生成 `database.uuid`、不改 1Panel Compose、不做其他环境中和。
+
+### 数据库名自动化：源库名读包、目标库名自动发现（2026-11-09）
+- **源库名不必手填**：备份包内 `MANIFEST.json` 本就记录了 `source.dbName`（实测该包为 `tg-odoo`）。新增 `lib/package-meta.js` 只读抽取该成员（加密包先解密），**未新增任何元数据格式**。
+- **目标库名自动发现**：新增 `lib/dbname-autodiscover.js`，按 `server.dbName`（显式，最高优先）→ `dbfilter` → `db_name` → PostgreSQL 库列表（排除系统库与超级用户同名库，恰一个才采用）逐级解析。
+- **概念严格分离**：`pgSuperUser`（实测该机为 `pgsql`）是 PostgreSQL 角色，不是数据库名，其同名库被排除；`dbfilter` 与 `db_name` 是两种配置，分别解析。
+- **源/目标边界**：`sourceDbName` 只说明备份来自哪里、仅用于展示与同名提示；`targetDbName` 才决定覆盖哪个库。两者同名也**不会**用源库名去决定覆盖位置。
+- **自动持久化**：`/discover` 与 `/precheck` 在自动识别成功且该服务器未手填库名时，把**目标**库名写回服务器配置；人工已填写的值绝不被覆盖；歧义（多候选）时 fail-closed 不写，并给出可操作提示。
+- **预检展示**：`/precheck` 返回 `sourceDbName` / `targetDbName` / `conflict` / 原因；恢复页先展示「来源库 / 目标库」，目标库无法可靠确定时**不发起** `/restore`。token 仍只绑定服务器与包路径，库名不进绑定。
+
+### 目标库名解析（真机缺陷修复，2026-11-09）
+- **根因**：目标机 `odoo.conf` 的 `dbfilter` 被注释掉 → `parseDbFilter()` 返回空串；而 `discover()` **从不读取服务器配置里的 `dbName`**（该字段声明了却从未被使用）。于是恢复带着空库名进入执行阶段，报出无法定位的 `不安全的数据库名：（空值或过长）`。
+- **修复**：
+  - 新增 `resolveDbName({ configured, confText })`：**显式配置优先**，其次 `dbfilter`；两者都没有返回空串，**绝不猜测**要覆盖哪个库。
+  - `discover()` 的 Docker/裸机两条路径都改走它。
+  - 恢复入口新增 `requireTargetDbName()` 前置校验：库名为空时在解密/上传/动库**之前**就失败，错误明确指向「服务器页填写数据库名」并解释 `dbfilter` 缺失。
+  - 服务器表单新增「数据库名」输入框（留空=从 dbfilter 解析）。
+- **顺带修复配置丢失**：编辑服务器时 `nextServer` 改为先展开既有配置，避免「只想填库名」却把 `odooContainer`/`pgContainer`/`dataPath` 等未展示字段清空。
+
+### 恢复健壮性（真机缺陷修复，2026-11-09）
+- **空白目标机不再 `DUMP_FAIL`**：阶段 A「安全备份」原先无条件对目标库执行 `odoo db dump`，而全新服务器的库是空壳库（0 张表、无 `ir_module_module`），`dump_db_manifest` 必然 `UndefinedTable` 失败，导致整单恢复中止。
+- **「缺 Odoo 系统表」不等于「库为空」**（边界修正）：安全备份现在区分四种情况，只在前两种跳过——
+  1. 库不存在 → 跳过（`no_db`）；
+  2. 库存在且 **0 张用户表** → 跳过（`empty_db`）；
+  3. **库存在、有表、但没有 Odoo 系统表** → 这是真实数据，**绝不跳过**，改用 `pg_dump -Fc` 做逻辑备份（`format=pgdump`，无 filestore 语义）；
+  4. 正常 Odoo 库 → `odoo db dump`（zip，含 filestore）。
+  
+  判定空库只认「用户表数量确实为 0」；探测失败（空值）绝不等于空库，会继续走备份让真实错误暴露。
+- **不再吞掉 dump 的 stderr**：原实现 `2>/dev/null` 只留一个 `DUMP_FAIL`，无法诊断；现在把 stderr 落盘并在失败时回传尾部若干行。
+- **恢复后自动切换站点域名**：备份来自生产库，`website.domain` / `web.base.url` 仍是 `www.toogel.cn`，原样恢复到另一台服务器会与生产抢同一域名。新增阶段 D2：把目标站点域名改为**设置页配置的「恢复目标域名」**（留空则自动用服务器名，仅当服务器名形如 `odoo.toogel.cn`）；同时改 `web.base.url` 并写入 `web.base.url.freeze=True`，随后重启容器使缓存失效。域名切换失败**不触发回滚**（数据已切换成功，域名可人工更正），只在结果与进度里明确报告。
+- **设置页新增可编辑「恢复目标域名」**：留空 = 自动用服务器名；填写值必须是主机名（前端与 Host 双侧校验，非法值不落盘、不发送）。域名在恢复执行时由 Host 读取配置，**不从前端请求体注入**。对应路由 `GET/POST /odoo-backup/restore-domain`，写入 `restoreDomain`（volatile）。
+- 新增 `lib/site-domain.js`：`isHostname` / `resolveTargetDomain`（显式 override 需通过主机名校验，防注入）/ `buildDomainPatchScript` / `parseDomainPatch`。
+
+### 界面宿主迁移（Settings Host Migration）
+- 注册宿主由 `plugins.bundle.config`（已安装插件里的配置卡片）改为 `settings.section`（DSH 原生设置页，`id: odoo-backup`、`order: 210`），并注册同 id 的 `settings.section.icon` 导航图标。
+- 旧入口移除：`apply` 内不再出现 `plugins.bundle.config` 注册，避免同一功能两处入口。
+- 页面内仍是原有三个 tab（服务器 / 备份 / 恢复）与全部既有能力：服务器增删改、SSH 指纹信任、连接测试、Passphrase Credentials、本地备份目录、备份与真实进度条、断点续传、取消任务、互斥锁、恢复预检与执行、最近备份回填。
+- 后端零改动：`lib/service.js`、`lib/backup.js`、`lib/restore.js`、`lib/task-state.js`、`lib/server-lock.js`、`lib/crypto.js`、`lib/knownhosts.js` 与 `index.js` 全部路由未改。
+- 接口依据（安装源码实证）：`settings.section` 为 list 型 root 作用域插槽，注册项 `{ id, order, label }`，组件收 `{ close }`；`slots.inject` 与 `register` 均返回 disposer，重挂前先 dispose 保证刷新不重复注册。
+- 新增 `locale/*.json` 的 `settings.nav` 文案（zh: Odoo19 备份与恢复 / en: Odoo19 Backup & Restore）。
+
+### 背景（真机缺陷）
+用户从日志/JSON 复制路径时连引号一起粘贴（`"K:\Backup\odoo\...\odoo-backup-202609.tar"`），或误选分片工作目录中的**明文 `.tar`** 中间产物，恢复直接报 `备份包不存在："K:\..."`。根因：四处入口都只把输入原样传给 `stat()`，既不去引号，也没有把「最终加密产物」明确告知用户。
+
+### 新增
+- `lib/restore-path.js`：`normalizeRestorePath()` 纯函数——`trim` 首尾空白、**仅**移除一对完整匹配的英文双引号、Windows 场景把 `/` 统一为 `\`；单侧/不匹配引号一律保留，不猜路径。
+- `lib/completed-package.js`：`resolveLastBackup()` 只读解析磁盘 `completed.json`，返回权威 `localPath`；必须同时满足 `completed===true`、路径以 `.tar.enc` 结尾、文件存在且非空、`detectFormat()` 确认加密，否则拒绝回填（**绝不回填分片目录中的明文 `.tar`**）。
+- Host 路由 `GET /odoo-backup/last-backup`：只依据磁盘状态与服务端校验，不信任前端传入路径。
+- 恢复页明确提示：正确格式 `.tar.enc`、不要选分片目录中间文件、执行前确认备份时间点与目标数据库；placeholder 改为真实 `.tar.enc` 示例。
+
+### 变更
+- 恢复入口统一规范化：`service.restore`、Agent 工具 `odoo_restore`、Host `/precheck` 与 `/restore`、Client 恢复按钮，全部复用同一规则（Client 侧内联同语义实现，因两侧模块作用域隔离）。
+- `odoo_restore` 的 `confirmToken` 绑定值改为规范化后的路径，因此「引号版 precheck + 无引号版 restore」也能正确配对，而**换包仍被拒绝**。
+- 备份成功后由 UI 调用 `/last-backup` 回填恢复输入框；仅在备份后端确认成功时调用，失败/取消分支不调用、不覆盖用户已填路径。
+- 规范化之后仍执行原有存在性、格式与加密检查，顺序不变。
+
+### 安全 / 保持不变
+`requireTrusted`/`guardHostKey`/`pinnedFingerprint`（SSH 主机指纹）、R10 `encryptFile`/`decryptFile`、Passphrase Credentials、`confirmToken` 一次性+5 分钟+绑定目标、明文备份拒绝、`runRestore()` 状态机与 verify-then-switch 流程**全部未改**。路径规范化只改变字符串表示，不降低任何校验。
+
+### 测试
+**410 / 410**（基线 377 + 新增 33：`PATH-1..11` 规范化边界、`CP-1..9` completed.json 校验与拒绝回填、`FLOW-1..12` 四入口一致性与安全不变量、`FILL-1..3` 行为级回填）。`FILL-1` 经「临时移除回填 → 失败 → 恢复 → 通过」验证测试有效；全量套件无回归。
+
+---
+
 ## [0.1.13] — 2026-11-09
 
 **SCP 大文件分片、断点续传、统一任务状态、P0 服务器互斥、真实进度条。**

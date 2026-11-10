@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 
 const SRC = 'C:/Users/Ho/.dsh/remote-workspaces/wmv8yhew3a4r8/dsh-odoo-backup';
 const RELEASES = 'K:/Backup/odoo-plugin-releases';
-const VERSION = '0.1.13';
+const VERSION = '0.1.14';
 const SNAP = join(RELEASES, `v${VERSION}-source`);
 const PACKAGES = join(RELEASES, 'packages');
 
@@ -141,14 +141,15 @@ const releaseManifest = {
     format: 'tar.gz (DSH bundle, install_bundle 可用目录或 tgz)',
   },
   verification: {
-    unitTests: '278/278',
-    syntax: '15/15',
-    redGreen: 'REG-1..8 + STORE-1..2 + ADD-1..3 + SCOPE-1..2 经 RED/GREEN 验证（含 getSnapshot 崩溃与 Electron 无 prompt 回归）',
+    unitTests: '551/551',
+    syntax: '29/29',
+    redGreen: 'v0.1.14 收尾：NEU-1..12 / NEUSVC-1..7 / NEUROUTE-1..8 / NEUUI-1..8 均经 RED→GREEN',
+    realMachine: '目标机 toogel 状态探针：flag=true, cron 1/42, 占位邮件 1, payment 0/26（只读）',
     application: 'applies, warnings: []',
     u4: 'fail-closed',
   },
   notVerified: [
-    '真实 R1 停机切换与回滚（需单独授权）',
+    '真实「解除中立化」执行（破坏性且不可逆，需用户在设置页显式授权）',
     '浏览器内视觉渲染与点击（GUI 需鉴权 URL，本轮未接入浏览器控制）',
   ],
   production: '未部署，生产服务器全程只读',

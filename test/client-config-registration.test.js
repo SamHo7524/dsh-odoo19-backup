@@ -157,6 +157,8 @@ function loadClient({ configForms, getThrows = false } = {}) {
   const live = () => registrations.filter((r) => r.live);
   return {
     registrations: live(),
+    // v0.1.14：页面与导航图标是两条条目，按槽名取设置页。
+    page: () => live().find((r) => r.opts.name === 'settings.section'),
     warns,
     timers,
     fireTimers: () => timers.forEach((t) => t.fn()),
@@ -170,20 +172,20 @@ function loadClient({ configForms, getThrows = false } = {}) {
 
 // ------------------------------------------------------------------ 回归用例
 
-test('REG-1 configForms 服务缺失时，仍无条件注册 plugins.bundle.config 配置卡片', (t) => {
+test('REG-1 configForms 服务缺失时，仍无条件注册设置页（settings.section）', (t) => {
   const h = loadClient({ configForms: undefined });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1,
-    '配置卡片不能因为配置服务缺失而整卡消失（服务缺失只能降级，不能隐藏）');
-  assert.equal(h.registrations[0].opts.name, 'plugins.bundle.config');
-  assert.equal(h.registrations[0].opts.key, pkg.name);
+  assert.ok(h.page(),
+    '设置页不能因为配置服务缺失而整页消失（服务缺失只能降级，不能隐藏）');
+  assert.equal(h.page().opts.name, 'settings.section');
+  assert.equal(h.page().opts.id, 'odoo-backup');
 });
 
 test('REG-2 服务缺失时，卡片首次渲染即显示明确的未就绪提示（无需点击）', (t) => {
   const h = loadClient({ configForms: undefined });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1);
-  const reg = h.registrations[0];
+  assert.ok(h.page(), '设置页应注册');
+  const reg = h.page();
   const injected = reg.opts.inject?.() ?? {};
   const text = texts(render(reg.comp, injected)).join('\n');
   assert.match(text, /配置服务未就绪/, '应在渲染时直接给出可见提示');
@@ -198,8 +200,8 @@ test('REG-3 已有服务器从 ConfigFormController 快照的 value.servers 读�
   const forms = makeConfigForms('include:odoo-backup', scope);
   const h = loadClient({ configForms: forms });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1);
-  const reg = h.registrations[0];
+  assert.ok(h.page(), '设置页应注册');
+  const reg = h.page();
   const injected = reg.opts.inject?.() ?? {};
   const text = texts(render(reg.comp, injected)).join('\n');
   assert.match(text, /prod/, '服务器名称应出现');
@@ -213,8 +215,8 @@ test('REG-4 配置 namespace 由运行时实际服务的命名空间动态确认
   const forms = makeConfigForms(runtimeNs, scope);
   const h = loadClient({ configForms: forms });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1);
-  const reg = h.registrations[0];
+  assert.ok(h.page(), '设置页应注册');
+  const reg = h.page();
   assert.ok(forms.gets.includes(runtimeNs),
     `应向 configForms 请求运行时实际服务的命名空间 ${runtimeNs}`);
   assert.ok(!forms.gets.includes('odoo-backup'),
@@ -226,7 +228,7 @@ test('REG-4 配置 namespace 由运行时实际服务的命名空间动态确认
 test('REG-6 ctx.get 自身抛错时，卡片仍然注册（任何配置服务异常都不得吞掉卡片）', (t) => {
   const h = loadClient({ configForms: undefined, getThrows: true });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1,
+  assert.ok(h.page(),
     'ctx.get 抛错也必须降级，不能中断 apply 导致整卡消失');
 });
 
@@ -238,8 +240,8 @@ test('REG-7 describe() 抛错时，卡片仍然注册并显示未就绪提示', 
   };
   const h = loadClient({ configForms: brokenForms });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1, 'describe 抛错不得让卡片消失');
-  const reg = h.registrations[0];
+  assert.ok(h.page(), 'describe 抛错不得让卡片消失');
+  const reg = h.page();
   const text = texts(render(reg.comp, reg.opts.inject?.() ?? {})).join('\n');
   assert.match(text, /配置服务未就绪/, '应降级为可见提示');
 });
@@ -252,13 +254,13 @@ test('REG-8 whileServed 抛错时，卡片仍然注册', (t) => {
   };
   const h = loadClient({ configForms: forms });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1, 'whileServed 抛错不得让卡片消失');
+  assert.ok(h.page(), 'whileServed 抛错不得让卡片消失');
 });
 
 test('REG-5 配置服务缺失 5 秒后输出点名 configForms 的诊断告警，而非静默消失', (t) => {
   const h = loadClient({ configForms: undefined });
   t.after(h.restore);
-  assert.equal(h.registrations.length, 1);
+  assert.ok(h.page(), '设置页应注册');
   assert.ok(h.timers.some((t2) => t2.ms >= 5000), '应安排一个 5 秒诊断定时器');
   h.fireTimers();
   assert.ok(h.warns.some((w) => /configForms/.test(w)), '告警应点名 configForms 便于定位');

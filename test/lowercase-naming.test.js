@@ -64,10 +64,12 @@ test('LOWER-3 cordis.patch.yml 的 name 与包名一致', () => {
   assert.ok(!patch.includes(OLD));
 });
 
-test('LOWER-4 client.js 的 id / key / locale.bind 与包名一致且为小写', () => {
+test('LOWER-4 client.js 的 id / 设置栏 id / locale.bind 与包名一致且为小写', () => {
   const src = read('client.js');
   assert.match(src, /id:\s*'@local\/dsh-odoo19-backup'/);
-  assert.match(src, /key:\s*'@local\/dsh-odoo19-backup'/);
+  // v0.1.14 宿主迁移：原 `key: <包名>` 卡片契约改为原生设置页栏目 id。
+  assert.match(src, /name:\s*'settings\.section'/);
+  assert.match(src, /id:\s*'odoo-backup'/);
   assert.match(src, /bind\?\.\('@local\/dsh-odoo19-backup'\)/);
   assert.ok(!src.includes(OLD));
 });

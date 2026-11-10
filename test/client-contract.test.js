@@ -23,8 +23,9 @@ test('client.js 的 ModuleLoader id 与包名一致', () => {
   assert.match(src, /id:\s*'@local\/dsh-odoo19-backup'/);
 });
 
-test('client.js 的 slot key 与包名一致', () => {
-  assert.match(src, /key:\s*'@local\/dsh-odoo19-backup'/);
+test('client.js 在原生设置页的栏目 id 为插件自有 id（v0.1.14 宿主迁移）', () => {
+  assert.match(src, /name:\s*'settings\.section'/, '整页挂在 settings.section');
+  assert.match(src, /id:\s*'odoo-backup'/, '栏目 id 必须是自有 id，避免顶替内置栏目');
 });
 
 test('显示名称含 dsh-odoo19-backup（zh + en）', () => {
@@ -34,17 +35,17 @@ test('显示名称含 dsh-odoo19-backup（zh + en）', () => {
 
 // ---------- 2. 配置契约（2026-11-06 修复后） ----------
 
-test('配置服务用 ctx.get 软取，卡片注册不被 configForms 的 inject gate 包裹', () => {
+test('配置服务用 ctx.get 软取，页面注册不被 configForms 的 inject gate 包裹', () => {
   assert.match(src, /ctx\.get\(\s*['"]configForms['"]\s*\)/,
     '必须软取：服务缺席时不抛错、不阻塞');
-  // 允许用 ctx.inject 注册「服务晚到」的等待者，但卡片注册必须先于它、
-  // 且不得被它包裹（2026-11-06 真机缺陷：gate 住就整卡消失）。
-  const mountIdx = src.indexOf('mountCard();');
+  // 允许用 ctx.inject 注册「服务晚到」的等待者，但页面注册必须先于它、
+  // 且不得被它包裹（2026-11-06 真机缺陷：gate 住就整页消失）。
+  const mountIdx = src.indexOf('mountSection();');
   const injectIdx = src.indexOf("ctx.inject(['configForms']");
-  assert.ok(mountIdx > 0, '必须先无条件调用 mountCard()');
+  assert.ok(mountIdx > 0, '必须先无条件调用 mountSection()');
   if (injectIdx > 0) {
     assert.ok(mountIdx < injectIdx,
-      'mountCard() 必须先于 ctx.inject 等待者执行（卡片注册不能被服务 gate）');
+      'mountSection() 必须先于 ctx.inject 等待者执行（页面注册不能被服务 gate）');
   }
 });
 

@@ -131,6 +131,8 @@ function loadClient({ configForms, lateService = false } = {}) {
 
   return {
     live: () => registrations.filter((r) => r.live),
+    // v0.1.14：页面与导航图标是两条独立条目，按槽名取页面，不依赖注册顺序。
+    page: () => registrations.filter((r) => r.live && r.opts.name === 'settings.section')[0],
     all: registrations,
     // 模拟服务晚到：触发子 inject 回调
     deliverLateService: (service) => injectCallbacks.forEach((cb) => cb({ configForms: service })),
@@ -155,7 +157,7 @@ function mount(comp, props) {
 test('ADD-1 点「添加服务器」不得依赖 window.prompt（Electron 不支持，恒返回 null）', () => {
   const scope = makeScope();
   const h = loadClient({ configForms: makeForms('include:odoo-backup', scope) });
-  const reg = h.live()[0];
+  const reg = h.page();
   assert.ok(reg, '卡片应注册');
 
   const tree = mount(reg.comp, reg.opts.inject?.() ?? {});
@@ -169,7 +171,7 @@ test('ADD-1 点「添加服务器」不得依赖 window.prompt（Electron 不支
 test('ADD-2 点「添加服务器」后应出现可填写的内联表单（而非弹窗）', () => {
   const scope = makeScope();
   const h = loadClient({ configForms: makeForms('include:odoo-backup', scope) });
-  const reg = h.live()[0];
+  const reg = h.page();
 
   // 模拟 React 重渲染：先点击，再用新 state 渲染
   let tree = mount(reg.comp, reg.opts.inject?.() ?? {});
@@ -185,7 +187,7 @@ test('ADD-2 点「添加服务器」后应出现可填写的内联表单（而�
 test('ADD-3 表单填写并保存后，写入 scope.set("servers", ...) 且含 name/host', async () => {
   const scope = makeScope();
   const h = loadClient({ configForms: makeForms('include:odoo-backup', scope) });
-  const reg = h.live()[0];
+  const reg = h.page();
 
   let tree = mount(reg.comp, reg.opts.inject?.() ?? {});
   const addBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('添加服务器')))[0];
@@ -218,21 +220,21 @@ test('ADD-3 表单填写并保存后，写入 scope.set("servers", ...) 且含 n
 
 test('SCOPE-1 configForms 在 apply 时缺席，也必须注册等待者（否则永远绑不上 scope）', () => {
   const h = loadClient({ configForms: undefined });
-  assert.ok(h.live().length === 1, '卡片仍应注册');
+  assert.ok(h.page(), '设置页仍应注册');
   assert.ok(h.hasInjectWaiter(),
     'apply 时服务缺席也必须通过 ctx.inject 等待它出现，否则 scope 永远为 undefined →「配置服务未就绪」');
 });
 
-test('SCOPE-2 服务晚到后，卡片重注册且 inject() 返回已绑定的 scope', () => {
+test('SCOPE-2 服务晚到后，设置页重注册且 inject() 返回已绑定的 scope', () => {
   const scope = makeScope();
   const h = loadClient({ configForms: undefined });
   assert.ok(h.hasInjectWaiter(), '应有等待者');
 
   h.deliverLateService(makeForms('include:odoo-backup', scope));
 
-  const live = h.live();
-  assert.ok(live.length >= 1, '晚到后仍应有存活卡片');
-  const injected = live[live.length - 1].opts.inject?.() ?? {};
+  const reg = h.page();
+  assert.ok(reg, '晚到后仍应有存活的设置页');
+  const injected = reg.opts.inject?.() ?? {};
   assert.equal(injected.scope, scope, '服务晚到后必须把 scope 交给组件');
 });
 
@@ -240,7 +242,7 @@ test('SCOPE-2 服务晚到后，卡片重注册且 inject() 返回已绑定的 s
 
 test('FORM-1 添加服务器表单包含 sshConfigAlias 输入框（guardHostKey 的合法放行路径）', () => {
   const h = loadClient({ configForms: undefined });
-  const reg = h.live()[0];
+  const reg = h.page();
   let tree = mount(reg.comp, reg.opts.inject?.() ?? {});
   const addBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('添加服务器')))[0];
   addBtn.props.onClick();
@@ -252,7 +254,7 @@ test('FORM-1 添加服务器表单包含 sshConfigAlias 输入框（guardHostKey
 
 test('FORM-2 添加服务器表单包含 pinnedFingerprint 输入框', () => {
   const h = loadClient({ configForms: undefined });
-  const reg = h.live()[0];
+  const reg = h.page();
   let tree = mount(reg.comp, reg.opts.inject?.() ?? {});
   const addBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('添加服务器')))[0];
   addBtn.props.onClick();
@@ -265,7 +267,7 @@ test('FORM-2 添加服务器表单包含 pinnedFingerprint 输入框', () => {
 test('FORM-3 填写 sshConfigAlias 后保存，写入该字段（不丢失）', async () => {
   const scope = makeScope();
   const h = loadClient({ configForms: makeForms('include:odoo-backup', scope) });
-  const reg = h.live()[0];
+  const reg = h.page();
 
   let tree = mount(reg.comp, reg.opts.inject?.() ?? {});
   const addBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('添加服务器')))[0];
@@ -299,7 +301,7 @@ test('FORM-3 填写 sshConfigAlias 后保存，写入该字段（不丢失）', 
 test('FORM-4 已有服务器行提供「重新扫描」按钮（v0.1.8 起并入信任主机面板）', () => {
   const scope = makeScope({ servers: [{ name: 'toogel', host: '47.121.205.143', port: 22, user: 'root' }] });
   const h = loadClient({ configForms: makeForms('include:odoo-backup', scope) });
-  const reg = h.live()[0];
+  const reg = h.page();
   const tree = mount(reg.comp, reg.opts.inject?.() ?? {});
   const rescanBtn = findAll(tree, (n) => n.type === 'button' && texts(n).some((x) => x.includes('重新扫描')))[0];
   assert.ok(rescanBtn, '服务器行应有「重新扫描」按钮；扫描与信任确认统一在「信任主机」面板完成');

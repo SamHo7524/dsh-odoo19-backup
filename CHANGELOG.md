@@ -8,6 +8,43 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.14] — 2026-11-09
+
+**Restore-package path usability fix: a pasted quoted path no longer fails with "package does not exist", and the verified final `.tar.enc` path is backfilled after a successful backup.**
+
+**UI host migration: the whole operation UI moved from the installed-plugin config card to a dedicated page in DSH's native Settings.**
+
+### Settings host migration
+- Registration host changed from `plugins.bundle.config` (config card inside Installed Plugins) to `settings.section` (native Settings page, `id: odoo-backup`, `order: 210`), plus a matching `settings.section.icon` navigation icon.
+- The old entry is gone: `apply` no longer registers `plugins.bundle.config`, so one feature has exactly one entrance.
+- The page keeps the original three tabs (Servers / Backup / Restore) and every existing capability: server CRUD, SSH fingerprint trust, connection test, Passphrase Credentials, local backup directory, backup with real progress, resumable chunked transfer, task cancel, server mutex, restore precheck and execution, last-backup backfill.
+- Zero backend change: `lib/service.js`, `lib/backup.js`, `lib/restore.js`, `lib/task-state.js`, `lib/server-lock.js`, `lib/crypto.js`, `lib/knownhosts.js` and every `index.js` route are untouched.
+- Interface basis (verified against the installed build): `settings.section` is a list-kind, root-scope slot whose registrations take `{ id, order, label }` and whose components receive `{ close }`; both `slots.inject` and `register` return disposers, and re-mounting disposes first so a refresh never duplicates the entry.
+- Added the `settings.nav` locale keys (zh: Odoo19 备份与恢复 / en: Odoo19 Backup & Restore).
+
+### Background (real-machine defect)
+Copying a path out of logs/JSON brings its surrounding quotes (`"K:\Backup\odoo\...\odoo-backup-202609.tar"`), or users pick the plaintext `.tar` intermediate inside the chunk working directory. Restore then fails with `备份包不存在："K:\..."`. Root cause: all four entries passed the input straight to `stat()` — quotes were never stripped, and nothing told the user which artifact is the final one.
+
+### Added
+- `lib/restore-path.js`: `normalizeRestorePath()` pure helper — trims surrounding whitespace, removes **exactly one** fully matched pair of ASCII double quotes, converts `/` to `\` on Windows. One-sided or mismatched quotes are preserved; the path is never guessed.
+- `lib/completed-package.js`: `resolveLastBackup()` reads the on-disk `completed.json` and returns the authoritative `localPath` only when `completed===true`, the path ends in `.tar.enc`, the file exists and is non-empty, and `detectFormat()` confirms encryption. Otherwise backfill is refused (**the plaintext `.tar` in the chunk directory is never backfilled**).
+- Host route `GET /odoo-backup/last-backup`: derives the path from disk plus server-side validation only, never from a client-supplied path.
+- Restore tab explicitly states the correct format (`.tar.enc`), warns against the chunk-directory intermediate `.tar`, and asks the user to confirm the backup time point and target database; the placeholder now shows a real `.tar.enc` example.
+
+### Changed
+- Restore entries normalize uniformly: `service.restore`, the `odoo_restore` Agent tool, Host `/precheck` and `/restore`, and the Client restore button all reuse the same rule (the Client keeps an inline equivalent because the two halves have isolated module scopes).
+- The `confirmToken` binding now uses the normalized path, so a quoted `precheck` pairs with an unquoted `restore` — while switching to a **different package is still rejected**.
+- After a successful backup the UI calls `/last-backup` to backfill the restore input; it is called only when the backend confirms success, never on failure/cancel, and never overwrites a user-entered path.
+- The original existence, format and encryption checks still run after normalization, in the same order.
+
+### Security / unchanged
+`requireTrusted`/`guardHostKey`/`pinnedFingerprint`, R10 `encryptFile`/`decryptFile`, Passphrase Credentials, the one-time 5-minute target-bound `confirmToken`, plaintext-package refusal, and the `runRestore()` verify-then-switch state machine are **all unchanged**. Path normalization only changes the string representation, never the checks.
+
+### Tests
+**410 / 410** (baseline 377 + 33 new: `PATH-1..11` normalization edges, `CP-1..9` `completed.json` validation and backfill refusal, `FLOW-1..12` cross-entry consistency and security invariants, `FILL-1..3` behavior-level backfill). `FILL-1` was proven effective by temporarily removing the backfill (fails) and restoring it (passes); the full suite shows no regressions.
+
+---
+
 ## [0.1.13] — 2026-11-09
 
 **SCP chunked transfer, resumable downloads, unified task state, P0 server mutex, real progress bars.**

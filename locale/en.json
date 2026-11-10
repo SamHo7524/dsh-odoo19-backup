@@ -4,6 +4,7 @@
     "description": "Back up Odoo 19 remotely (database + filestore + addons + runtime deps + config) and restore safely to any server. Restore runs through temp-DB verification, downtime switch, and rollback on failure."
   },
   "ui": {
+    "settings.nav": "Odoo19 Backup & Restore",
     "tab.servers": "Servers",
     "tab.backup": "Backup",
     "tab.restore": "Restore",

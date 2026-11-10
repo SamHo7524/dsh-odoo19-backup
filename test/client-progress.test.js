@@ -17,7 +17,8 @@ test('UI-PROG-1 备份 Tab 有真实进度条元素（width 由 percent 驱动�
 test('UI-PROG-2 恢复 Tab 也有真实进度条（不只备份）', () => {
   const restoreIdx = src.indexOf("tab === 'restore'");
   assert.ok(restoreIdx > 0);
-  const seg = src.slice(restoreIdx, restoreIdx + 16000);
+  // 取到文件末尾：恢复 Tab 是最后一个 Tab 区块，避免固定字符窗口随新增内容失效。
+  const seg = src.slice(restoreIdx);
   assert.match(seg, /TaskProgress|role:\s*'progressbar'/, '恢复 Tab 应渲染进度条');
   assert.match(seg, /kind === 'restore'/, '恢复进度条按 kind 隔离');
 });
