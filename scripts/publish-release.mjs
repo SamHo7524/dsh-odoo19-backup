@@ -54,7 +54,8 @@ const ghHeaders = (extra = {}) => ({
 });
 
 async function ghApi(path, init = {}) {
-  const r = await fetch(`https://api.github.com/repos/${OWNER_REPO}${path}`, { ...init, headers: ghHeaders(init.headers) });
+  const clean = String(path).replace(/^\/+/, '');
+  const r = await fetch(`https://api.github.com/repos/${OWNER_REPO}/${clean}`, { ...init, headers: ghHeaders(init.headers) });
   if (r.status === 404 && (init.method || 'GET') === 'GET') return null;
   if (!r.ok) die(`GitHub API ${init.method || 'GET'} ${path} -> ${r.status}: ${(await r.text()).slice(0, 400)}`);
   return r.status === 204 ? null : r.json();
@@ -79,6 +80,27 @@ function releaseNotes(changelogText) {
   }
   const text = summary.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   return `${text}\n\n---\n\nInstall: \`github:${OWNER_REPO}#${tag}\`\n\nDetails: [CHANGELOG.md](https://github.com/${OWNER_REPO}/blob/main/CHANGELOG.md) · [CHANGELOG.zh-CN.md](https://github.com/${OWNER_REPO}/blob/main/CHANGELOG.zh-CN.md)`;
+}
+
+// Release 标题沿用历史风格：「vX.Y.Z — 一句话摘要」（取自该版本章节的加粗概述首句）。
+function releaseTitle(changelogText) {
+  const lines = changelogText.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim().startsWith(`## [${version}]`));
+  if (start === -1) return tag;
+  let first = '';
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^## /.test(lines[i])) break;
+    const t = lines[i].replace(/\*\*/g, '').trim();
+    if (t && !t.startsWith('###') && t !== '---') { first = t; break; }
+  }
+  const short = first
+    .replace(/`/g, '')
+    .split(/(?<=[.。!?])\s/)[0]
+    .replace(/[.。!?]$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const capped = short.length > 64 ? `${short.slice(0, 64).replace(/\s+\S*$/, '')}…` : short;
+  return capped ? `${tag} — ${capped}` : tag;
 }
 
 // ---------- 1. 文档一致性闸门 ----------
@@ -138,7 +160,12 @@ if (dryRun) { log('\nDRY-RUN OK（未写远端）'); process.exit(0); }
 // ---------- 4. 同步发布仓 + 提交 + tag + push ----------
 if (!releasesOnly) {
   log('=== mirror to publish repo ===');
-  execFileSync('robocopy', [ROOT, REPO, '/MIR', '/XD', '.git', 'node_modules', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], { stdio: 'pipe' });
+  // robocopy 用 0–7 表示成功（1 = 有文件被复制），>=8 才是失败。
+  try {
+    execFileSync('robocopy', [ROOT, REPO, '/MIR', '/XD', '.git', 'node_modules', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'], { stdio: 'pipe', cwd: ROOT });
+  } catch (e) {
+    if (typeof e.status !== 'number' || e.status >= 8) die(`robocopy 失败 (exit ${e.status})`);
+  }
   runInRepo(['add', '-A']);
   const status = runInRepo(['status', '--porcelain']);
   if (status) {
@@ -170,24 +197,25 @@ const remoteTag = await ghApi(`git/ref/tags/${tag}`);
 if (!remoteTag) die(`远端不存在 tag ${tag}，先推 tag`);
 const notes = releaseNotes(changelogEn);
 if (!notes) die('无法从 CHANGELOG 生成 Release 说明');
+const title = releaseTitle(changelogEn);
 
 let release = await ghApi(`releases/tags/${tag}`);
 if (!release) {
   release = await ghApi('/releases', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tag_name: tag, name: tag, body: notes, draft: false, prerelease: false }),
+    body: JSON.stringify({ tag_name: tag, name: title, body: notes, draft: false, prerelease: false }),
   });
   log(`  release created: ${release.html_url}`);
 } else {
   log(`  release exists: ${release.html_url}`);
-  if (release.body !== notes) {
+  if (release.body !== notes || release.name !== title) {
     release = await ghApi(`/releases/${release.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: tag, body: notes }),
+      body: JSON.stringify({ name: title, body: notes }),
     });
-    log('  notes refreshed');
+    log(`  notes/title refreshed: ${title}`);
   }
 }
 
