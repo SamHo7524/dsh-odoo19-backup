@@ -9,6 +9,7 @@ import { normalizeRestorePath } from './lib/restore-path.js';
 import { resolveLastBackup } from './lib/completed-package.js';
 import { isHostname } from './lib/site-domain.js';
 import { createOdooBackupTool, createOdooRestoreTool } from './lib/tools.js';
+import { unwrapVolatile } from './lib/config-value.js';
 import { scanHostKey, pinHostKey } from './lib/knownhosts.js';
 import {
   normalizeFp, verifyFingerprint, confirmTrust, applyTrust,
@@ -74,11 +75,12 @@ export const Config = z.object({
     .volatile(),
 });
 
-/** volatile 字段解析为 { get(): T } 活引用；读取时解包为普通值。 */
-export function unwrapVolatile(value) {
-  if (value !== null && typeof value === 'object' && typeof value.get === 'function') return value.get();
-  return value;
-}
+/**
+ * volatile 字段解析为 { get(): T } 活引用；读取时解包为普通值。
+ * v0.1.15：实现移到 lib/config-value.js，供工具层（lib/tools.js）共用，
+ * 这里 re-export 保持既有调用点与测试口径不变。
+ */
+export { unwrapVolatile };
 
 export function apply(ctx, config) {
   // volatile 的 servers 字段是活引用：保证读到的是最新值（settings.update 写入后立即生效）。

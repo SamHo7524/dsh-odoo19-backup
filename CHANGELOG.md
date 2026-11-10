@@ -8,6 +8,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.15] — 2026-11-10
+
+**Agent-tool crash fix: `Config.servers` is a `.volatile()` live reference (`{ get() }`) at runtime, and `lib/tools.js` read it as a plain array.**
+
+### Background (real-machine defect)
+Right after v0.1.14 was installed from its GitHub pin, both Agent tools failed on their first real call:
+- `odoo_backup { action: "listServers" }` → `((intermediate value) ?? []).map is not a function`
+- `odoo_backup { action: "test", server: "toogel" }` → `list.find is not a function`
+
+Root cause: `Config.servers` carries `.volatile()` (it is the only kind of field `dsh-settings` allows to be written at runtime), so at runtime the value is a `{ get(): T }` live reference, not an array. The Host route layer already unwrapped it everywhere (`v0.1.13` fixed exactly this class of bug in `/precheck`), but `lib/tools.js` — `findServer()` and the `listServers` branch — still did `config?.servers ?? []` and then called `.find()` / `.map()` on the wrapper. Every action of both tools goes through `requireServer()`, so **the whole Agent-tool path was unusable** while the Settings page kept working fine (it goes through HTTP routes).
+
+Why the suite stayed green: unit tests injected plain arrays, so the volatile wrapper was never exercised.
+
+### Fixed
+- `lib/config-value.js` (new): `unwrapVolatile()` moved out of `index.js` (so the tool layer can import it without a circular dependency) plus `unwrapVolatileList()`, which guarantees an array.
+- `lib/tools.js`: `findServer()` and the `listServers` branch now go through `unwrapVolatileList(config?.servers)`; a missing/empty field still yields `[]` instead of throwing.
+- `index.js`: imports `unwrapVolatile` from `lib/config-value.js` and re-exports it, so every existing call site and source-matching test is unchanged.
+
+### Tests
+**557 / 557** (baseline 551 + 6 new `TOOLVOL-1..6`: volatile `listServers`, volatile server resolution for other actions, unknown server still rejected, `odoo_restore precheck` under a volatile config, plain-array regression, and missing/empty `servers`). The new tests reproduce the production messages verbatim (`list.find is not a function`, `((intermediate value) ?? []).map is not a function`) before the fix, and pass after it. `node --check` 30/30 files.
+
+### Security / unchanged
+No change to `requireTrusted`/`guardHostKey`/`pinnedFingerprint`, R10 encryption, Passphrase Credentials, `confirmToken` semantics, the restore state machine, or any Host route. Only how the tool layer reads a config field changed.
+
+---
+
 ## [0.1.14] — 2026-11-09
 
 **Restore-package path usability fix: a pasted quoted path no longer fails with "package does not exist", and the verified final `.tar.enc` path is backfilled after a successful backup.**

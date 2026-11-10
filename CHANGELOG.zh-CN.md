@@ -8,6 +8,32 @@
 
 ---
 
+## [0.1.15] — 2026-11-10
+
+**Agent 工具崩溃修复：`Config.servers` 在运行时是 `.volatile()` 的 `{ get() }` 活引用，而 `lib/tools.js` 把它当普通数组读了。**
+
+### 背景（真机缺陷）
+v0.1.14 按 GitHub pin 装好、重启后，两个 Agent 工具第一次真实调用就报错：
+- `odoo_backup { action: "listServers" }` → `((intermediate value) ?? []).map is not a function`
+- `odoo_backup { action: "test", server: "toogel" }` → `list.find is not a function`
+
+根因：`Config.servers` 带 `.volatile()`（`dsh-settings` 只允许运行时写 volatile 字段），所以运行时读到的是 `{ get(): T }` 活引用而不是数组。Host 路由层早就处处解包（`v0.1.13` 就修过同类问题：`/precheck`），但 `lib/tools.js` 的 `findServer()` 与 `listServers` 分支仍是 `config?.servers ?? []` 后直接 `.find()` / `.map()`。两个工具的**每个**动作都要过 `requireServer()`，所以 **Agent 工具整条路径都不可用**，而设置页因为走 HTTP 路由一直正常。
+
+测试为什么没测出来：单测注入的是普通数组，从未经过 volatile 包装。
+
+### 修复
+- 新增 `lib/config-value.js`：把 `unwrapVolatile()` 从 `index.js` 移出（工具层可直接 import，不产生循环依赖），并新增 `unwrapVolatileList()` 保证返回数组。
+- `lib/tools.js`：`findServer()` 与 `listServers` 分支改为 `unwrapVolatileList(config?.servers)`；字段缺失/为空时返回 `[]` 而不是抛错。
+- `index.js`：改为从 `lib/config-value.js` 导入并 re-export，所有既有调用点与按源码断言的测试口径不变。
+
+### 测试
+**557 / 557**（基线 551 + 新增 `TOOLVOL-1..6`：volatile 下的 `listServers`、其他动作按 volatile 配置解析服务器、未知服务器仍按「未找到」拒绝、`odoo_restore precheck` 在 volatile 配置下可用、普通数组回归、`servers` 缺失/为空返回空数组）。新增测试在修复前**逐字复现**真机报错（`list.find is not a function`、`((intermediate value) ?? []).map is not a function`），修复后全绿。`node --check` 30/30 文件通过。
+
+### 安全边界 / 未变
+`requireTrusted` / `guardHostKey` / `pinnedFingerprint`、R10 加密、Passphrase Credentials、`confirmToken` 语义、恢复状态机与全部 Host 路由**均未改动**；只是工具层读取配置字段的方式变了。
+
+---
+
 ## [0.1.14] — 2026-11-09
 
 **恢复包路径易用性修复：粘贴带引号路径不再报「备份包不存在」，备份成功后自动回填最终 `.tar.enc` 路径。**
