@@ -249,3 +249,24 @@ test('SVC-CRED-2 键顺序无关：credentials getter 在展开之后定义也�
   const r2 = await svc.backup('staging');
   assert.equal(r2.ok, true);
 });
+
+test('SVC-CRED-3 attachCredentials 不能因只读 getter 抛错（0.1.21 回归）', async () => {
+  // 复现线上：deps 用 getter 透传 credentials（活引用），service 创建后
+  // UI 路由每次请求都会调用 attachCredentials()，而 getter 属性无 setter。
+  let creds = null;
+  const lazyDeps = { ...deps(), get credentials() { return creds; } };
+  const svc = createService({ config: cfg, deps: lazyDeps });
+  // createService 已把 getter 装回，d.credentials 只有 getter；赋值必须走 setter 而不是直接抛
+  assert.doesNotThrow(() => svc.attachCredentials({ resolve: async () => ({ value: 'pw-x', source: 'file' }) }));
+  // 显式 attach 的凭证必须真的可用（盖过尚未注入的 live getter）
+  const r = await svc.backup('staging');
+  assert.equal(r.ok, true);
+});
+
+test('SVC-CRED-4 attachCredentials 忽略非法参数，不破坏已有引用', async () => {
+  const svc = createService({ config: cfg, deps: deps() });
+  assert.doesNotThrow(() => svc.attachCredentials(null));
+  assert.doesNotThrow(() => svc.attachCredentials({}));
+  const r = await svc.backup('staging');
+  assert.equal(r.ok, true, '注入的 deps.credentials 仍然可用');
+});

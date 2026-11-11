@@ -6,6 +6,31 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.22] — 2026-11-11
+
+**修复 0.1.21 引入的回归：重新挂载凭证时对只读 getter 赋值抛错。**
+
+### 背景（用户在 0.1.21 后第一次真实恢复时命中）
+点恢复立刻失败：
+
+```
+失败：Cannot set property credentials of #<Object> which has only a getter
+```
+
+0.1.21 把 `credentials` 的活引用 getter 装回了依赖袋（让 `ctx.inject(['credentials'])` 的延迟注入可见），但这个属性**没有 setter**。Host 路由每次请求都会调 `service.attachCredentials(credentials)`，内部执行 `d.credentials = credentials` —— 对只读 getter 属性赋值在严格模式（ESM 恒为严格）下是非法的。于是 `/precheck`、`/restore`、`/backup` 等所有 UI 请求都在动手前就抛错。
+
+这是同一个底层错误的第三次出现（0.1.15 的 `.volatile()` 快照、0.1.21 的 getter 快照、这一次是**向 getter 写入**）：**在边界上把活引用当成普通值——这次发生在写方向。**
+
+### 修复
+- `lib/service.js`：只读 getter 依赖改为「getter + 影子槽 setter」成对安装——getter 优先返回活引用，活引用为空时回落到影子值。`attachCredentials()` 因此可用，同时不削弱延迟绑定。
+
+### 测试
+**599 / 599**（基线 597 + 2：`SVC-CRED-3` 在只读 getter 依赖上挂载凭证并证明挂载值确实被使用；`SVC-CRED-4` 忽略 null/非法参数且不破坏既有引用）。修复前 `SVC-CRED-3` 复现的正是线上原文。
+
+### 安全 / 未变
+凭据存储、加密、主机指纹闸门、令牌、恢复状态机全部未改。本修复只是让注入通道重新可写。
+
+---
 ## [0.1.21] — 2026-11-11
 
 **修复：`deps` 的 getter 在创建 service 时被快照，导致后注入的凭证服务对 Agent 工具永远不可见。**

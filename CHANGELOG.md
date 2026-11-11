@@ -6,6 +6,31 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.22] — 2026-11-11
+
+**Fix a regression 0.1.21 introduced: re-attaching credentials threw on a getter-only property.**
+
+### Background (hit by the user on the first real restore after 0.1.21)
+Starting a restore failed instantly with:
+
+```
+失败：Cannot set property credentials of #<Object> which has only a getter
+```
+
+0.1.21 restored the live `credentials` getter onto the dependency bag (so late `ctx.inject(['credentials'])` becomes visible), but that property has **no setter**. The Host routes call `service.attachCredentials(credentials)` at the start of every request, which does `d.credentials = credentials` — illegal on a getter-only property in strict mode (ESM is always strict). So every UI request through `/precheck`, `/restore`, `/backup` … threw before touching anything.
+
+This is the third occurrence of the same underlying mistake (0.1.15 `.volatile()` snapshot, 0.1.21 getter snapshot, now a write to a getter): **treating a live reference as a plain value at a boundary — this time in the write direction.**
+
+### Fixed
+- `lib/service.js`: a getter-only dependency is installed with a companion setter that writes to a shadow slot; the getter returns the live reference when present and falls back to the shadow value otherwise. `attachCredentials()` therefore works without weakening late binding.
+
+### Tests
+**599 / 599** (baseline 597 + 2: `SVC-CRED-3` attaches credentials on a getter-only dep and then proves the attached credential is actually used; `SVC-CRED-4` ignores null/invalid arguments without disturbing the existing reference). `SVC-CRED-3` reproduces the exact production message before the fix.
+
+### Security / unchanged
+No change to credential storage, encryption, host-key gating, tokens or the restore state machine. This only makes the injection channel writable again.
+
+---
 ## [0.1.21] — 2026-11-11
 
 **Fix: a `deps` getter was snapshotted at service creation, so credentials injected later were invisible to the agent tools.**
