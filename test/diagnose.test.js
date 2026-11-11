@@ -64,3 +64,9 @@ test('DIAG-8 explainFailure 在命中时追加「诊断」段且保留原始错�
   assert.match(out, /诊断/);              // 追加诊断段
   assert.match(out, /建议/);
 });
+test('DIAG-9 缺模块/未重载（clarity_project_id 同款）→ 指向「部署后需重启」', () => {
+  const raw = "odoo.addons.base.models.ir_qweb.QWebError: Error while rendering the template: AttributeError: 'website' object has no attribute 'clarity_project_id'";
+  const d = diagnoseFailure(raw);
+  assert.equal(d.code, 'module-not-loaded');
+  assert.match(d.suggestion, /重启/);
+});

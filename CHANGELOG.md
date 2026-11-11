@@ -6,6 +6,33 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.23] — 2026-11-11
+
+**Restore now restarts Odoo after deploying addons/pydeps — otherwise the just-deployed modules are never imported.**
+
+### Background (real failure on `new.toogel.cn`, fresh deployment)
+The restore reached the temp-database verification and failed with `临时环境验证失败：V6 站点可访问`. Evidence from the target:
+
+- `GET /` and `/web/login` returned **500** with
+  `QWebError: AttributeError: 'website' object has no attribute 'clarity_project_id'`.
+- The DB references module `website_clarity` (installed, `19.0.1.0.0`) and its field.
+- `/mnt/extra-addons/website_clarity` **was present on disk** (23 modules deployed) — so deployment worked.
+- But Odoo only imports module Python **at process start**; the container started at 11:59 and the deploy happened at 12:04, so the running process had no `website_clarity` models → template render failed.
+
+The 0.1.14 fix got the ordering right (deploy addons *before* the DB) but missed that the Odoo **process** must be restarted to see new code. On the long-lived target this never surfaced; a freshly created container exposes it immediately.
+
+### Added
+- `lib/restore.js`: `buildRestartOdooScript()`, `parseRestartResult()`, `shouldRestartAfterDeploy()` and stage A0b `phaseRestartOdoo()` — `docker restart` the Odoo container, then poll `/web/login` (60 × 2 s) until it answers. Runs **only when the deploy actually placed addons or pydeps** (no pointless downtime) and fails closed with a clear message if the container does not come back.
+- Progress messages say it plainly: "正在重启 Odoo 以载入新部署的模块（期间站点短暂不可访问）".
+- `lib/diagnose.js`: new pattern for `object has no attribute` / `QWebError` / `Some modules are not loaded` → explains the "code deployed after start" cause and points at the restart.
+
+### Tests
+**605 / 605** (baseline 599 + 6: `RS-1..5` restart script/parse/gating, `DIAG-9` for the missing-module signature).
+
+### Security / unchanged
+No change to authorization, encryption, tokens, the switch/rollback state machine or DB handling. The restart happens after deployment and before the DB is touched.
+
+---
 ## [0.1.22] — 2026-11-11
 
 **Fix a regression 0.1.21 introduced: re-attaching credentials threw on a getter-only property.**

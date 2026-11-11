@@ -6,6 +6,32 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.23] — 2026-11-11
+
+**恢复在部署 addons/pydeps 之后现在会重启 Odoo——否则刚部署的模块永远不会被导入。**
+
+### 背景（new.toogel.cn 全新部署的真机失败）
+恢复到临时库验证阶段失败：`临时环境验证失败：V6 站点可访问`。目标机取证：
+
+- `GET /` 与 `/web/login` 返回 **500**：`QWebError: AttributeError: 'website' object has no attribute 'clarity_project_id'`
+- 备份库引用了模块 `website_clarity`（已安装，`19.0.1.0.0`）及其字段
+- 磁盘上 `/mnt/extra-addons/website_clarity` **确实存在**（23 个模块已部署）——部署本身是成功的
+- 但 Odoo 只在**进程启动时**导入模块 Python：容器 11:59 启动、部署 12:04 才发生，运行中的进程里没有 `website_clarity` 的模型 → 模板渲染 500
+
+0.1.14 的修复把顺序做对了（先部署 addons 再碰数据库），但漏了一点：**Odoo 进程必须重启才能看到新代码**。在老的长生命周期容器上这一点被掩盖，全新容器立刻暴露。
+
+### 新增
+- `lib/restore.js`：`buildRestartOdooScript()`、`parseRestartResult()`、`shouldRestartAfterDeploy()`，以及阶段 A0b `phaseRestartOdoo()`——`docker restart` Odoo 容器后轮询 `/web/login`（60×2 秒）直到响应。**只在本次真的部署了 addons/pydeps 时执行**（不制造无谓停机），容器起不来时 fail-closed 并给出明确消息。
+- 进度提示说人话：「正在重启 Odoo 以载入新部署的模块（期间站点短暂不可访问）」。
+- `lib/diagnose.js`：新增 `object has no attribute` / `QWebError` / `Some modules are not loaded` 模式 → 解释「代码在启动后才部署」的原因并指向重启。
+
+### 测试
+**605 / 605**（基线 599 + 6：`RS-1..5` 重启脚本/解析/触发条件，`DIAG-9` 缺模块签名）。
+
+### 安全 / 未变
+授权、加密、令牌、切换/回滚状态机、数据库处理全部未改。重启发生在部署之后、数据库被触碰之前。
+
+---
 ## [0.1.22] — 2026-11-11
 
 **修复 0.1.21 引入的回归：重新挂载凭证时对只读 getter 赋值抛错。**
