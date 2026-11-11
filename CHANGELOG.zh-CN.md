@@ -6,6 +6,27 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.21] — 2026-11-11
+
+**修复：`deps` 的 getter 在创建 service 时被快照，导致后注入的凭证服务对 Agent 工具永远不可见。**
+
+### 背景（0.1.20 真机验收时发现）
+0.1.20 的版本闸门对同一个备份包报 `源（备份包）：(未知)`，但直接读该包的 `MANIFEST.source.odooVersion` 明明是 `19.0-20260619`。闸门于是退化成「未知 → 放行 + 警告」，没有拦住 19→20 这一对。
+
+根因：`createService()` 用 `{ ...defaults, ...deps }` 组装依赖。**展开会立刻求值 getter**，而 `index.js` 里 `get credentials() { return credsRef.current; }` 正是为 `ctx.inject(['credentials'])` 设计的延迟绑定通道——它在创建瞬间被冻结成 `undefined`。UI 路由没受影响是因为每次请求都显式 `service.attachCredentials(credentials)`；Agent 工具路径没有这个钩子，于是 `requirePassphrase()` 直接抛「凭证服务不可用」，工具读到的每个备份包都成了「无版本」。
+
+这与 0.1.15 的 `.volatile()` 快照是同一类缺陷：**活引用在展开边界上被静默冻结成了值。**
+
+### 修复
+- `lib/service.js`：展开之后，把 `deps` 上自有属性的 getter/setter 按原描述符装回，后注入立即可见。普通值行为完全不变。
+
+### 测试
+**597 / 597**（基线 595 + 2：`SVC-CRED-1` 创建后才注入凭证，断言下一次调用即可读到；`SVC-CRED-2` 值变化后仍读到新值，并覆盖「展开后才定义 getter」的写法）。修复前 `SVC-CRED-1` 报的正是线上原文「凭证服务不可用（ctx.credentials 未注入）」。
+
+### 安全 / 未变
+凭据存储、R10 加密、主机指纹闸门、令牌、恢复状态机全部未改。本修复只是让「本来就存在的延迟注入」真正到达需要它的代码。
+
+---
 ## [0.1.20] — 2026-11-11
 
 **恢复前先用 Odoo 版本做闸门，且每次失败都必须自带解释。**

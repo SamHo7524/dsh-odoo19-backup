@@ -218,3 +218,34 @@ test('SVC-DIAG-4 未命中的错误原样透出，不伪造诊断', async () => 
     },
   );
 });
+
+// ---------------- v0.1.21：credentials 必须是活引用，不能在创建时被快照 ----------------
+
+test('SVC-CRED-1 创建后才注入的 credentials 必须立即可用（getter 不能被展开快照）', async () => {
+  let creds = null; // 创建时还没有凭证服务（ctx.inject 尚未回调）
+  const base = deps();
+  const lazyDeps = {
+    ...base,
+    get credentials() { return creds; },
+  };
+  const svc = createService({ config: cfg, deps: lazyDeps });
+  // 注入前：应明确报「凭证服务不可用」
+  await assert.rejects(() => svc.backup('staging'), /凭证服务不可用/);
+  // 注入后：必须立刻可用（活引用，而不是创建时的快照 undefined）
+  creds = { resolve: async () => ({ value: 'pw-late', source: 'file' }) };
+  const r = await svc.backup('staging');
+  assert.equal(r.ok, true);
+});
+
+test('SVC-CRED-2 键顺序无关：credentials getter 在展开之后定义也要生效', async () => {
+  const base = deps();
+  let creds = { resolve: async () => ({ value: 'pw-a', source: 'file' }) };
+  const lazyDeps = { ...base };
+  Object.defineProperty(lazyDeps, 'credentials', { get: () => creds, enumerable: true, configurable: true });
+  const svc = createService({ config: cfg, deps: lazyDeps });
+  const r1 = await svc.backup('staging');
+  assert.equal(r1.ok, true);
+  creds = { resolve: async () => ({ value: 'pw-b', source: 'file' }) }; // 变化后仍应读到新值
+  const r2 = await svc.backup('staging');
+  assert.equal(r2.ok, true);
+});

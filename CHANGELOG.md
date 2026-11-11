@@ -6,6 +6,27 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.21] — 2026-11-11
+
+**Fix: a `deps` getter was snapshotted at service creation, so credentials injected later were invisible to the agent tools.**
+
+### Background (found while verifying 0.1.20 on the real machine)
+0.1.20's version gate reported `源（备份包）：(未知)` for a package whose `MANIFEST.source.odooVersion` is `19.0-20260619` — read straight from the same file it printed `19.0-20260619`. The gate fell back to "unknown → allow with warning" instead of refusing the 19→20 pair.
+
+Root cause: `createService()` builds its dependency bag as `{ ...defaults, ...deps }`. Spreading **evaluates getters immediately**, so `index.js`'s `get credentials() { return credsRef.current; }` — the deliberate late-binding channel for `ctx.inject(['credentials'])` — was frozen to `undefined` at creation time. The UI routes were unaffected because they call `service.attachCredentials(credentials)` on every request; the agent-tool path has no such hook, so `requirePassphrase()` threw "凭证服务不可用" and every package the tools read came back version-less.
+
+This is the same class of bug as the 0.1.15 `.volatile()` snapshot: **a live reference silently became a frozen value at a spread boundary.**
+
+### Fixed
+- `lib/service.js`: after the spread, own-property getters/setters from `deps` are re-installed with their original descriptors, so late injection is visible. Plain values behave exactly as before.
+
+### Tests
+**597 / 597** (baseline 595 + 2: `SVC-CRED-1` injects credentials *after* creation and asserts the very next call sees them; `SVC-CRED-2` re-reads after the value changes, and also covers a getter defined after the spread). `SVC-CRED-1` fails with the production message "凭证服务不可用（ctx.credentials 未注入）" before the fix.
+
+### Security / unchanged
+No change to credential storage, R10 encryption, host-key gating, tokens or the restore state machine. The fix only makes an existing lazily-injected service actually reach the code that needs it.
+
+---
 ## [0.1.20] — 2026-11-11
 
 **Restore is now gated by the Odoo version *before* any remote work, and every failure explains itself.**
