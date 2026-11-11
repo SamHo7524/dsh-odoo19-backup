@@ -9,9 +9,9 @@ const servers = [
 ];
 
 /** 记录调用的假服务；返回固定结果，便于断言"工具只做路由与授权"。 */
-function fakeService() {
+function fakeService(overrides = {}) {
   const calls = [];
-  return {
+  const base = {
     calls,
     async test(name) { calls.push(['test', name]); return { ok: true, system: { os: 'Ubuntu 24.04' } }; },
     async discover(name) { calls.push(['discover', name]); return { ok: true, instances: [{ dbName: 'tg-odoo' }] }; },
@@ -20,8 +20,18 @@ function fakeService() {
       calls.push(['restore', name, packagePath, opts]);
       return { ok: true, state: 'COMMITTED' };
     },
+    // v0.1.17：precheck 会先做版本预检，工具依赖该结果决定是否发 token。
+    async inspectRestore(name, packagePath) {
+      calls.push(['inspectRestore', name, packagePath]);
+      return {
+        sourceDbName: 'tg-odoo', targetDbName: 'tg-odoo', conflict: null,
+        sourceVersion: '19.0-20260619', targetVersion: '19.0-20261102',
+        versionGate: { ok: true, level: 'same-major', message: '版本一致（同为 Odoo 19 大版本）。' },
+      };
+    },
     status() { return { running: false, lastTask: null }; },
   };
+  return { ...base, ...overrides, calls };
 }
 
 function makeTools({ config = { servers }, svc = fakeService(), store = createTokenStore() } = {}) {
@@ -168,8 +178,8 @@ test('odoo_restore: precheck→restore 正常路径成功', async () => {
     action: 'restore', server: 'staging', packagePath: 'K:/a.tar', confirmToken: pre.confirmToken,
   });
   assert.equal(r.ok, true);
-  assert.equal(svc.calls.length, 1);
-  assert.equal(svc.calls[0][0], 'restore');
+  // v0.1.17：precheck 会先做版本预检（inspectRestore），随后才是真正的 restore
+  assert.deepEqual(svc.calls.map((c) => c[0]), ['inspectRestore', 'restore']);
 });
 
 test('odoo_restore: token 一次性——同 token 二次恢复被拒', async () => {
@@ -199,7 +209,10 @@ test('odoo_restore: token 绑定目标——换服务器被拒', async () => {
     }),
     /不匹配：server/,
   );
-  assert.equal(svc.calls.length, 0, '未授权目标绝不能触发恢复');
+  assert.equal(
+    svc.calls.filter((c) => c[0] === 'restore').length, 0,
+    '未授权目标绝不能触发恢复（precheck 的 inspectRestore 只是只读预检）',
+  );
 });
 
 test('odoo_restore: token 绑定包——换备份包被拒', async () => {

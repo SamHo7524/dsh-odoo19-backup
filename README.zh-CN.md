@@ -7,8 +7,8 @@
 通过 SSH 备份数据库、filestore、addons、运行时依赖与配置；恢复采用「临时库验证 → 停机切换 → 失败自动回滚」状态机。主机密钥信任 **fail-closed**：未固定或指纹变化一律拒绝连接。
 
 - 包名：`@local/dsh-odoo19-backup`
-- 当前版本：`0.1.19`
-- 安装源：`github:SamHo7524/dsh-odoo19-backup#v0.1.19`
+- 当前版本：`0.1.20`
+- 安装源：`github:SamHo7524/dsh-odoo19-backup#v0.1.20`
 - 许可：内部使用（`package.json` 中 `private: true`）
 
 > 本插件**仅支持 Odoo 19**。跨大版本恢复（如 19 → 20）按设计直接拒绝。
@@ -20,13 +20,13 @@
 在 DSH 中直接从本仓库安装 bundle：
 
 ```
-github:SamHo7524/dsh-odoo19-backup#v0.1.19
+github:SamHo7524/dsh-odoo19-backup#v0.1.20
 ```
 
-或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.19) 下载安装包：
+或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.20) 下载安装包：
 
 ```
-dsh-odoo19-backup-0.1.19.tgz
+dsh-odoo19-backup-0.1.20.tgz
 ```
 
 > 请用 `plugin_manager`（`install_bundle`）安装，不要手工往 `node_modules` 里拷文件：DSH 每次启动都会按 profile 的 `package.json` 重跑 `pnpm install`，只有持久的安装 spec 才能在重启后存活。
@@ -49,6 +49,8 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 |:--|:--|
 | 备份 | 远程环境发现（Docker / 1Panel / 裸机）→ 导出 → 打包（数据库 + filestore + addons + `.local` 依赖 + 配置）→ 加密下载。≥100 MiB 走分块传输（100 MiB 一片）、SHA-256 校验、**可断点续传**（已校验分片绝不重下）。 |
 | 恢复 | R1 状态机：安全备份 → 临时库恢复 → V1–V7 验证 → 停机切换 → 验证 → 提交 / 自动回滚。切换前先部署备份包里的 addons 与 pydeps，恢复出的站点直接带真实模块集。 |
+| 版本闸门 | 动手前先比对备份包 `MANIFEST.source.odooVersion` 与目标机 `discover()` 到的 `odooVersion`：**可证明跨大版本时直接拒绝**（列出两个版本 + 两条路径：换同大版本目标机，或把 19→20 当升级项目），`/precheck` 返回 409 且不发行 `confirmToken`；版本未知则放行并给出显式警告。 |
+| 失败诊断 | 永不黑盒：已知故障（版本/表结构不匹配、库已存在、磁盘满、SSH 指纹失败 vs 认证失败、数据库连不上、超时）统一渲染成「原始错误 + 【诊断】原因 + 【建议】下一步」；未命中规则的错误原样透出。界面与两个 Agent 工具看到的是同一段文字。 |
 | 恢复选项 | 目标数据库名（从服务器 `dbfilter` 自动识别，也可显式指定）与**恢复目标域名**：切换完成前把 `ir_config_parameter` / `website` 里的源站域名改写为目标域名（如 `www.toogel.cn` → `odoo.toogel.cn`）。 |
 | Neutralize | 恢复后（或按需）把目标站置于可安全测试的状态：停用出站邮件服务器与定时任务、支付/测试提供方失效、站点重命名。UI 与工具提供 status → precheck → apply，并提供 **Keep / Release（保持 / 解除）** 按钮 —— 备份恢复闭环可以在插件端一次走完，不必上服务器敲命令。 |
 | Agent 工具 | `odoo_backup`（`test` / `discover` / `backup` / `listServers` / `fingerprint` / `pin`）与 `odoo_restore`（`precheck` / `restore` / `status`）。状态查询只读、执行走真实 SSH、确认令牌一次性。 |
@@ -103,7 +105,7 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 ## 开发
 
 ```bash
-node --test "test/**/*.test.js"        # 559 条测试
+node --test "test/**/*.test.js"        # 595 条测试
 node --check index.js client.js lib/*.js
 node scripts/release-sync-check.mjs    # 校验 tag ↔ GitHub Release ↔ 中英文 CHANGELOG ↔ README
 ```
@@ -141,9 +143,9 @@ scripts/            release-sync-check.mjs（发布一致性闸门）
 
 ## 状态与限制
 
-- 570 / 570 单测通过；`node --check` 30 个文件全干净。
+- 595 / 595 单测通过；`node --check` 30 个文件全干净。
 - 真机验证：`odoo_backup` 的 `listServers` / `test`（真实 SSH）、`odoo_restore` 状态查询、原生设置分区及其 HTTP 路由。
 - **未执行 / 未授权**：生产主库真实 R1 停机切换、agent 浏览器内点击验证、生产部署。开发全程生产服务器只读。
 - Host 半侧改动需**完全重启 DSH**；Client 半侧硬刷新即可。
 
-完整 0.1.0 → 0.1.19 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。
+完整 0.1.0 → 0.1.20 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。

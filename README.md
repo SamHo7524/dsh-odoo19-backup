@@ -7,8 +7,8 @@ A [DeepSeek Harness](https://github.com/) (DSH) plugin for **Odoo 19 remote back
 It backs up the database, filestore, addons, runtime dependencies and configuration over SSH, and restores through a temp-database verification, downtime switch and rollback-on-failure state machine. Host-key trust is **fail-closed** — an unpinned or changed host key is refused.
 
 - Bundle package name: `@local/dsh-odoo19-backup`
-- Current version: `0.1.19`
-- Install source: `github:SamHo7524/dsh-odoo19-backup#v0.1.19`
+- Current version: `0.1.20`
+- Install source: `github:SamHo7524/dsh-odoo19-backup#v0.1.20`
 - License: private / internal use (`private: true` in `package.json`)
 
 > This plugin supports **Odoo 19 only**. Cross-major-version restore (e.g. 19 → 20) is refused by design.
@@ -20,13 +20,13 @@ It backs up the database, filestore, addons, runtime dependencies and configurat
 In DSH, install the bundle directly from this repository:
 
 ```
-github:SamHo7524/dsh-odoo19-backup#v0.1.19
+github:SamHo7524/dsh-odoo19-backup#v0.1.20
 ```
 
-Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.19):
+Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.20):
 
 ```
-dsh-odoo19-backup-0.1.19.tgz
+dsh-odoo19-backup-0.1.20.tgz
 ```
 
 > Use `plugin_manager` (`install_bundle`) rather than copying files into `node_modules`: DSH re-runs `pnpm install` from the profile's `package.json` on every start, so only a durable install spec survives a restart.
@@ -49,6 +49,8 @@ odoo_backup { "action": "listServers" }   # { ok: true, servers: [...] }
 |:--|:--|
 | Backup | Remote discovery (Docker / 1Panel / bare metal) → dump → package (DB + filestore + addons + `.local` deps + config) → encrypted download. Transfers ≥100 MiB are chunked (100 MiB parts), SHA-256 verified and **resumable** — a verified part is never re-downloaded. |
 | Restore | R1 state machine: safety backup → temp restore → V1–V7 verification → downtime switch → verify → commit / automatic rollback. Bundles deploy addons and pydeps before the DB is switched, so a restored site starts with its real module set. |
+| Version gate | Before any remote write, the backup's `MANIFEST.source.odooVersion` is compared with the target's discovered `odooVersion`. A provably cross-major pair is **refused** (with both versions and two options: same-major target, or treat 19→20 as an upgrade project) and `/precheck` answers 409 without issuing a `confirmToken`; an unknown version proceeds with an explicit warning. |
+| Diagnostics | Failures are never black-box: known modes (version/schema mismatch, DB already exists, disk full, SSH host-key vs auth, DB unreachable, timeout) render as raw error + 【诊断】 cause + 【建议】 next step; unknown errors pass through verbatim. The UI and both agent tools show the same text. |
 | Restore options | Target database name (auto-discovered from the server's `dbfilter` or set explicitly) and **restore target domain** — rewrites `ir_config_parameter` / `website` domains from the source site to the target (e.g. `www.toogel.cn` → `odoo.toogel.cn`) before the switch completes. |
 | Neutralize | After a restore (or on demand), `neutralize` puts the target site in a safe state for testing: it disables outgoing mail servers and cron jobs, keeps payment/test providers inert and rebrands the site. `odoo_backup`/UI expose status → precheck → apply, and the **Keep / Release neutralize** buttons let you complete the whole backup-restore loop without a shell. |
 | Agent tools | `odoo_backup` (`test` / `discover` / `backup` / `listServers` / `fingerprint` / `pin`) and `odoo_restore` (`precheck` / `restore` / `status`). Read-only status, real SSH executions, single-use confirm token. |
@@ -141,9 +143,9 @@ The project is **not** a local git checkout during development; releases are pub
 
 ## Status & limitations
 
-- 570 / 570 unit tests pass; `node --check` clean across 30 files.
+- 595 / 595 unit tests pass; `node --check` clean across 30 files.
 - Real-machine verified: `odoo_backup` `listServers` / `test` over SSH, `odoo_restore` status, the native settings section and its HTTP routes.
 - **Not executed / not authorized**: real R1 downtime switch on the production primary database, agent-driven browser click-through, production deployment. Production servers were read-only throughout development.
 - Host-side changes require a **full DSH restart**; the Client half only needs a hard refresh.
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.1.19), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.
+See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.1.20), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.

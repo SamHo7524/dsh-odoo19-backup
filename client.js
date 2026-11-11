@@ -1109,11 +1109,18 @@ window.__ModuleLoader__.load({
                       const conflictText = pre.conflict === 'same-name'
                         ? ' 名称相同只作提示：恢复仍只覆盖目标服务器上的该库，不会用源库名决定覆盖位置。'
                         : '';
+                      // v0.1.17：版本结论先讲清楚（跨大版本时 /precheck 直接 409，走不到这里）
+                      const versionText = pre.sourceVersion || pre.targetVersion
+                        ? ` 版本：${pre.sourceVersion || '(未知)'} → ${pre.targetVersion || '(未知)'}` +
+                          (pre.versionCheck === 'same-major'
+                            ? '（同大版本）'
+                            : '（未能预检，若大版本不同会在 load 阶段失败并给出诊断）')
+                        : '';
                       if (!pre.targetDbName) {
-                        setOne(s.name, `${sourceText}；${targetText}`);
+                        setOne(s.name, `${sourceText}；${targetText}${versionText}`);
                         return;
                       }
-                      setOne(s.name, `${sourceText}；${targetText}${conflictText} 恢复中（此过程较久，请勿关闭页面）...`);
+                      setOne(s.name, `${sourceText}；${targetText}${versionText}${conflictText} 恢复中（此过程较久，请勿关闭页面）...`);
                       const { result } = await api('/restore', {
                         server: s.name,
                         packagePath: pkg,

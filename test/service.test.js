@@ -147,3 +147,74 @@ test('serverConnection 过滤掉插件专有字段', () => {
   assert.equal(conn.odooContainer, undefined);
   assert.equal(conn.dbName, undefined);
 });
+
+// ---------------- v0.1.17：版本闸门 + 失败诊断 ----------------
+
+test('SVC-VG-1 跨大版本：恢复在动手前就被拒绝，绝不调用 runRestore', async () => {
+  const d = deps({
+    detectFormat: async () => 'dsh-odoo',
+    discover: async () => ({ ok: true, instances: [{ dbName: 'tg-odoo', odooVersion: '20.0-20261102' }] }),
+    readPackageMeta: async () => ({
+      ok: true, sourceDbName: 'tg-odoo',
+      source: { odooVersion: '19.0-20260619' },
+    }),
+  });
+  const svc = createService({ config: cfg, deps: d });
+  await assert.rejects(
+    () => svc.restore('staging', null, 'K:/b.tar.enc', {}),
+    (err) => {
+      assert.match(err.message, /19\.0-20260619/);
+      assert.match(err.message, /20\.0-20261102/);
+      assert.match(err.message, /建议/);
+      return true;
+    },
+  );
+  assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 0);
+});
+
+test('SVC-VG-2 同大版本：正常执行', async () => {
+  const d = deps({
+    detectFormat: async () => 'dsh-odoo',
+    readPackageMeta: async () => ({ ok: true, sourceDbName: 'tg-odoo', source: { odooVersion: '19.0-20260619' } }),
+  });
+  const svc = createService({ config: cfg, deps: d });
+  const r = await svc.restore('staging', null, 'K:/b.tar.enc', {});
+  assert.equal(r.ok, true);
+  assert.equal(d.calls.filter((c) => c[0] === 'runRestore').length, 1);
+});
+
+test('SVC-DIAG-3 恢复失败时错误里必须带诊断与建议（不再只有原始报错）', async () => {
+  const d = deps({
+    detectFormat: async () => 'dsh-odoo',
+    readPackageMeta: async () => ({ ok: true, sourceDbName: 'tg-odoo', source: { odooVersion: '19.0-20260619' } }),
+    runRestore: async () => {
+      throw new Error('odoo db load 失败 (rc=1)：psycopg2.errors.UndefinedColumn: column "is_live" of relation "payment_provider" does not exist');
+    },
+  });
+  const svc = createService({ config: cfg, deps: d });
+  await assert.rejects(
+    () => svc.restore('staging', null, 'K:/b.tar.enc', {}),
+    (err) => {
+      assert.match(err.message, /is_live/);       // 原始错误仍在
+      assert.match(err.message, /【诊断】/);
+      assert.match(err.message, /【建议】/);
+      return true;
+    },
+  );
+});
+
+test('SVC-DIAG-4 未命中的错误原样透出，不伪造诊断', async () => {
+  const d = deps({
+    detectFormat: async () => 'dsh-odoo',
+    readPackageMeta: async () => ({ ok: true, sourceDbName: 'tg-odoo', source: { odooVersion: '19.0-20260619' } }),
+    runRestore: async () => { throw new Error('weird unknown failure xyz'); },
+  });
+  const svc = createService({ config: cfg, deps: d });
+  await assert.rejects(
+    () => svc.restore('staging', null, 'K:/b.tar.enc', {}),
+    (err) => {
+      assert.equal(err.message, 'weird unknown failure xyz');
+      return true;
+    },
+  );
+});

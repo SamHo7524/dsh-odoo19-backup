@@ -6,6 +6,41 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.20] — 2026-11-11
+
+**Restore is now gated by the Odoo version *before* any remote work, and every failure explains itself.**
+
+### Background (real failure, reported by the user)
+A restore of an Odoo-19 backup (`tg-odoo`, from `toogel` / `19.0-20260619`) onto `new.toogel.cn` failed with a raw, opaque dump:
+
+```
+odoo db load 失败 (rc=1)：... neutralize.py", line 47 ... 
+psycopg2.errors.UndefinedColumn: column "is_live" of relation "payment_provider" does not exist
+```
+
+Two independent defects were behind it:
+
+1. **The version gate was dead code.** `lib/verify.js`'s `checkVersionCompatible()` existed and was unit-tested, but **nothing in the restore path ever called it**. The README promised "cross-major restore (19 → 20) is refused by design"; in reality nothing refused it. The target turned out to be **Odoo 20** (`20.0-20261102`, image `odoo:20.0`), so Odoo 20's own `payment/data/neutralize.sql` (`UPDATE payment_provider SET is_live = False`) ran against an Odoo-19 schema that has no such column, and `odoo db load -n` died mid-restore.
+2. **Failures were black-box.** The user's words: "当备份或者恢复过程中有问题，应该有提示，然后再报失败，不能直接报失败" — a raw stack trace tells the operator nothing about what to do next.
+
+### Added
+- `lib/version-gate.js`: compares the backup's `MANIFEST.source.odooVersion` with the target's discovered `odooVersion`. Cross-major → **refused before any remote write**, with both versions, the reason, and two concrete options (same-major target, or treat 19→20 as an upgrade project). Unknown version → allowed **with an explicit warning** (an old package without `odooVersion` must not be permanently un-restorable).
+- `lib/diagnose.js`: pattern-based failure explanation. Known failure modes (neutralize/schema mismatch, DB already exists, disk full, SSH host-key vs SSH auth, DB unreachable, timeout) are rendered as `原始错误 + 【诊断】原因 + 【建议】下一步`; unknown errors pass through **verbatim** (never disguised as a known cause).
+- Precheck now surfaces the verdict: `GET /precheck` returns `sourceVersion` / `targetVersion` / `versionCheck` / `versionWarning`, and answers **409** when the versions are provably incompatible (no `confirmToken` is issued, so a doomed restore cannot be confirmed). The `odoo_restore` agent tool does the same and prints `源（备份包）：… 目标机：…` in its render.
+- Restore tab shows the version line before starting (`19.0-20260619 → 19.0-20261102（同大版本）`).
+
+### Fixed
+- `lib/service.js` `runGuarded` (and the no-stateDir branch) stores the explained text in the task state and rethrows it, so both the UI and the agent tool show cause + suggestion on failure.
+- `lib/server-lock.js` `saveAll`: a concurrent `rename` could throw `ENOENT` when the state directory is removed mid-write (surfaced as a flaky concurrency test). The lock is a pointer, not the source of truth, so this now degrades gracefully instead of failing the operation.
+
+### Tests
+**595 / 595** (baseline 577 + 18: `DIAG-1..8`, `VG-1..6`, `SVC-VG-1/2`, `SVC-DIAG-3/4`). `SVC-VG-1` asserts `runRestore` is **never called** on a cross-major pair; `SVC-DIAG-3` asserts the exact production text now carries `【诊断】` and `【建议】`; `SVC-DIAG-4` asserts unknown errors stay verbatim.
+
+### Security / unchanged
+No change to `guardHostKey` / `pinnedFingerprint`, R10 encryption, passphrase credentials, `confirmToken` semantics, the restore state machine, or any authorization boundary. This release only adds a pre-flight refusal and human-readable explanations.
+
+---
+
 ## [0.1.19] — 2026-11-11
 
 **Safety convergence: tool output must be lossless-JSON safe, and the neutralize card no longer offers actions while the target state is unknown.**
@@ -46,6 +81,8 @@ state is unknown).
   restore-task record as an explicit server-side authorization boundary is planned for 0.1.20.
 - `serverConnection()` still strips `dbName`, so a configured fallback db name never reaches
   auto-discovery (pre-existing, tracked separately).
+
+---
 
 ## [0.1.18] — 2026-11-11
 

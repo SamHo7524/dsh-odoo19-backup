@@ -34,6 +34,15 @@ function fakeService() {
       calls.push(['restore', name, packagePath, opts]);
       return { ok: true };
     },
+    // v0.1.17：precheck 先做版本预检（这里给同大版本，放行）
+    async inspectRestore(name, packagePath) {
+      calls.push(['inspectRestore', name, packagePath]);
+      return {
+        sourceDbName: 'tg-odoo', targetDbName: 'tg-odoo', conflict: null,
+        sourceVersion: '19.0-20260619', targetVersion: '19.0-20261102',
+        versionGate: { ok: true, level: 'same-major', message: '版本一致（同为 Odoo 19 大版本）。' },
+      };
+    },
     status() { return { running: false, lastTask: null }; },
   };
 }

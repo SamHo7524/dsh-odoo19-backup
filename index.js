@@ -468,6 +468,21 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
       const neutralize = Boolean(body.neutralize);
       if (credentials) service.attachCredentials?.(credentials);
       const preview = await service.inspectRestore(body.server, packagePath);
+
+      // v0.1.17：跨大版本时当场拒绝（不发行令牌），并把两个版本写进错误里。
+      const gate = preview?.versionGate;
+      if (gate && gate.ok === false) {
+        return send(409, {
+          ok: false,
+          error: gate.message,
+          sourceVersion: preview?.sourceVersion ?? '',
+          targetVersion: preview?.targetVersion ?? '',
+          versionCheck: gate.level,
+          sourceDbName: preview?.sourceDbName ?? null,
+          targetDbName: preview?.targetDbName ?? null,
+        });
+      }
+
       const autoPersistedDbName = await persistAutoDbName(body.server, preview?.discovery);
       const token = tokenStore.create({
         server: body.server, packagePath, neutralize,
@@ -483,6 +498,11 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
         targetReason: preview?.targetReason ?? null,
         dbNameSource: preview?.discovery?.source ?? null,
         autoPersistedDbName,
+        sourceVersion: preview?.sourceVersion ?? '',
+        targetVersion: preview?.targetVersion ?? '',
+        versionCheck: gate?.level ?? 'unknown',
+        versionMessage: gate?.ok ? gate.message : null,
+        versionWarning: gate?.warning ?? null,
       });
     }
     if (route === '/restore') {

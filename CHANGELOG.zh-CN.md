@@ -6,6 +6,40 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.20] — 2026-11-11
+
+**恢复前先用 Odoo 版本做闸门，且每次失败都必须自带解释。**
+
+### 背景（用户实测的真实失败）
+把 Odoo 19 的备份（`tg-odoo`，来自 `toogel` / `19.0-20260619`）恢复到 `new.toogel.cn` 失败，界面上只有一段原始堆栈：
+
+```
+odoo db load 失败 (rc=1)：… neutralize.py", line 47 …
+psycopg2.errors.UndefinedColumn: column "is_live" of relation "payment_provider" does not exist
+```
+
+背后其实是两个独立缺陷：
+
+1. **版本闸门是死代码。** `lib/verify.js` 的 `checkVersionCompatible()` 存在、也有单测，但**恢复链路从未调用它**。README 写着「跨大版本（19 → 20）按设计拒绝」，实际没有任何地方拒绝。目标机实测是 **Odoo 20**（`20.0-20261102`，镜像 `odoo:20.0`），于是 Odoo 20 自带的 `payment/data/neutralize.sql`（`UPDATE payment_provider SET is_live = False`）打在 Odoo 19 的表结构上——该表没有 `is_live` 列，`odoo db load -n` 在恢复中途崩掉。
+2. **失败是黑盒。** 用户原话：「当备份或者恢复过程中有问题，应该有提示，然后再报失败，不能直接报失败」。一段堆栈不会告诉操作者下一步该做什么。
+
+### 新增
+- `lib/version-gate.js`：把备份包 `MANIFEST.source.odooVersion` 与目标机 `discover()` 到的 `odooVersion` 对比。跨大版本 → **在任何远端写操作之前拒绝**，并给出两个版本、原因和两条可选路径（换同大版本目标机 / 把 19→20 当升级项目做）。版本未知 → **放行但显式警告**（很早的备份包没有 `odooVersion`，不能因此永远无法恢复）。
+- `lib/diagnose.js`：按模式解释失败。已知故障（neutralize/表结构不匹配、库已存在、磁盘满、SSH 指纹失败 vs SSH 认证失败、数据库连不上、超时）统一渲染成「原始错误 + 【诊断】原因 + 【建议】下一步」；未命中规则的错误**原样透出**，绝不伪装成已知原因。
+- 预检给出结论：`GET /precheck` 返回 `sourceVersion` / `targetVersion` / `versionCheck` / `versionWarning`；版本可证明不兼容时返回 **409** 且**不发行 `confirmToken`**（注定失败的恢复无法被确认执行）。`odoo_restore` Agent 工具同样处理，并在渲染里打印「源（备份包）：… 目标机：…」。
+- 恢复 Tab 在开始前显示版本行（`19.0-20260619 → 19.0-20261102（同大版本）`）。
+
+### 修复
+- `lib/service.js` 的 `runGuarded`（含无 stateDir 分支）把解释后的文本写入任务状态并重新抛出，UI 与 Agent 工具都能看到原因 + 建议。
+- `lib/server-lock.js` 的 `saveAll`：状态目录在异步写途中被删除时，`rename` 会抛 `ENOENT`（表现为并发测试偶发失败）。锁只是指针而非真相源，改为优雅退化，不再让清理动作把正常流程判失败。
+
+### 测试
+**595 / 595**（基线 577 + 18：`DIAG-1..8`、`VG-1..6`、`SVC-VG-1/2`、`SVC-DIAG-3/4`）。`SVC-VG-1` 断言跨大版本时 `runRestore` **一次都不许被调用**；`SVC-DIAG-3` 断言真实失败文本现在必须带【诊断】与【建议】；`SVC-DIAG-4` 断言未知错误原样保留。
+
+### 安全 / 未变
+`guardHostKey` / `pinnedFingerprint`、R10 加密、口令凭据、`confirmToken` 语义、恢复状态机、任何授权边界**全部未改**。本版只增加了「动手前拒绝」与「人话解释」。
+
+---
 ## [0.1.19] — 2026-11-11
 
 **安全收敛：工具出口必须可无损 JSON 化；目标状态未知时，中立化卡片不再提供任何操作按钮。**
@@ -43,6 +77,8 @@
 - 「恢复目标机」语义目前用「状态可读」近似表达。持久化恢复任务记录作为显式的服务端
   授权边界，计划于 0.1.20 落地。
 - `serverConnection()` 仍会剥掉 `dbName`，配置兜底库名传不进自动发现（既有问题，单独跟踪）。
+
+---
 
 ## [0.1.18] — 2026-11-11
 

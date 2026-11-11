@@ -52,8 +52,13 @@ test('FLOW-3 service.restore .tar.enc 正常识别并执行', async () => {
   assert.equal(r.ok, true);
 });
 
+const INSPECT_OK = {
+  sourceDbName: 'tg-odoo', targetDbName: 'tg-odoo', conflict: null,
+  sourceVersion: '19.0-20260619', targetVersion: '19.0-20261102',
+  versionGate: { ok: true, level: 'same-major', message: '版本一致（同为 Odoo 19 大版本）。' },
+};
 test('FLOW-4 Agent: precheck 与 restore 在规范值上绑定 token（带引号也能通过）', async () => {
-  const svc = { restore: async () => ({ ok: true }) };
+  const svc = { restore: async () => ({ ok: true }), inspectRestore: async () => INSPECT_OK };
   const store = createTokenStore();
   const tool = createOdooRestoreTool({ config: cfg, service: svc, tokenStore: store });
   const pre = await tool.execute({ action: 'precheck', server: 's1', packagePath: '"K:/b/x.tar.enc"' });
@@ -67,7 +72,7 @@ test('FLOW-4 Agent: precheck 与 restore 在规范值上绑定 token（带引号
 test('FLOW-5 Agent: token 仍绑定包（换包被拒）→ 安全不降低', async () => {
   const store = createTokenStore();
   const tool = createOdooRestoreTool({
-    config: cfg, service: { restore: async () => ({ ok: true }) }, tokenStore: store,
+    config: cfg, service: { restore: async () => ({ ok: true }), inspectRestore: async () => INSPECT_OK }, tokenStore: store,
   });
   const pre = await tool.execute({ action: 'precheck', server: 's1', packagePath: 'K:/b/a.tar.enc' });
   await assert.rejects(() => tool.execute({
