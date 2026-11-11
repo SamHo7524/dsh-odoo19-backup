@@ -6,6 +6,30 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.24] — 2026-11-11
+
+**Fix: the configured `dbName` never reached discovery (it was stripped by `serverConnection`), so restores on a host with a commented-out `dbfilter` were refused.**
+
+### Background (blocked the first real restore after 0.1.23)
+The restore was refused with:
+
+```
+无法确定目标数据库名：该服务器的 odoo.conf 未设置有效的 dbfilter（可能被注释或为 .*），
+插件不会猜测要覆盖哪个库。请在「服务器」页把该服务器的「数据库名」填成实际库名后重试。
+```
+
+…even though the server **did** have `dbName: tg-odoo` configured. `requireTrusted()` returned `serverConnection(fullEntry)`, which deliberately keeps only SSH fields — so `dbName`, `odooContainer`, `pgContainer`, `addonsPath`, `dataPath` were all dropped before `discover()` ran. With the container's `dbfilter` commented out, `resolveDbName()` had nothing to fall back on and returned empty. This was already noted as a known limitation in the 0.1.19 entry ("`serverConnection()` still strips `dbName`, so a configured fallback db name never reaches auto-discovery").
+
+### Fixed
+- `lib/service.js` `requireTrusted()`: the **fingerprint gate still receives the connection-only projection** (SSH code must not see plugin fields), but the function now returns the **full config entry**, so `discover()` / `runRestore()` see `dbName` and the container/path hints.
+
+### Tests
+**608 / 608** (baseline 605 + 3: `SVC-SRV-1` asserts `discover` receives `dbName` and `odooContainer`; `SVC-SRV-2` asserts `guardHostKey` still receives a connection-only object — no config leakage into the SSH layer; `SVC-SRV-3` asserts `runRestore` receives the configured `dbName` through the dbfilter-missing path).
+
+### Security / unchanged
+No weakening: the host-key gate is still fed exactly the same connection projection, and no credentials or config-only fields are exposed to SSH. Only the in-process object passed to discovery changed.
+
+---
 ## [0.1.23] — 2026-11-11
 
 **Restore now restarts Odoo after deploying addons/pydeps — otherwise the just-deployed modules are never imported.**

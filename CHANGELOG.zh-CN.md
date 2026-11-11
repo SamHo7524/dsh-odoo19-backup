@@ -6,6 +6,30 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.24] — 2026-11-11
+
+**修复：配置里的 `dbName` 从未到达 discovern（被 `serverConnection` 剥掉），导致 `dbfilter` 被注释的机器上恢复被拒。**
+
+### 背景（0.1.23 后第一次真实恢复被挡住）
+恢复被拒绝：
+
+```
+无法确定目标数据库名：该服务器的 odoo.conf 未设置有效的 dbfilter（可能被注释或为 .*），
+插件不会猜测要覆盖哪个库。请在「服务器」页把该服务器的「数据库名」填成实际库名后重试。
+```
+
+但这台服务器**明明配置了 `dbName: tg-odoo`**。根因：`requireTrusted()` 返回的是 `serverConnection(完整条目)`——那个函数只保留 SSH 字段，于是 `dbName`、`odooContainer`、`pgContainer`、`addonsPath`、`dataPath` 在 `discover()` 运行之前就被丢掉了。容器 `dbfilter` 又被注释掉，`resolveDbName()` 无从回退，只能返回空。这条其实在 0.1.19 的「已知限制」里记过一笔（`serverConnection()` 剥掉 `dbName`，配置库名到不了自动发现）。
+
+### 修复
+- `lib/service.js` 的 `requireTrusted()`：**指纹闸门仍然只拿连接字段**（SSH 层不该看到插件字段），但函数改为返回**完整配置条目**，于是 `discover()` / `runRestore()` 能看到 `dbName` 与容器/路径提示。
+
+### 测试
+**608 / 608**（基线 605 + 3：`SVC-SRV-1` 断言 `discover` 收到 `dbName` 与 `odooContainer`；`SVC-SRV-2` 断言 `guardHostKey` 仍只收到连接对象——配置不泄漏进 SSH 层；`SVC-SRV-3` 断言在 dbfilter 缺失路径下 `runRestore` 仍拿到配置库名）。
+
+### 安全 / 未变
+没有放宽任何限制：主机指纹闸门仍喂同样的连接投影，SSH 层看不到任何配置专有字段或凭据。变的只是进程内传给 discover 的对象。
+
+---
 ## [0.1.23] — 2026-11-11
 
 **恢复在部署 addons/pydeps 之后现在会重启 Odoo——否则刚部署的模块永远不会被导入。**

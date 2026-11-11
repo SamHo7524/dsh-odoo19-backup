@@ -270,3 +270,47 @@ test('SVC-CRED-4 attachCredentials 忽略非法参数，不破坏已有引用', 
   const r = await svc.backup('staging');
   assert.equal(r.ok, true, '注入的 deps.credentials 仍然可用');
 });
+
+// ---------------- v0.1.24：配置字段必须到达 discover（dbName 被 serverConnection 剥掉） ----------------
+
+test('SVC-SRV-1 discover 必须收到配置里的 dbName（不能只给连接字段）', async () => {
+  const seen = [];
+  const d = deps({
+    discover: async (server) => {
+      seen.push({ name: server.name, dbName: server.dbName, odooContainer: server.odooContainer });
+      return { ok: true, instances: [{ dbName: server.dbName || '', odooVersion: '19.0' }] };
+    },
+  });
+  const svc = createService({ config: cfg, deps: d });
+  const r = await svc.discover('staging');
+  assert.equal(seen[0].dbName, 'tg-odoo', '配置里的 dbName 必须透传给 discover');
+  assert.equal(seen[0].odooContainer, '1Panel-odoo-5td9', '容器名同样不能丢');
+  assert.equal(r.instances[0].dbName, 'tg-odoo');
+});
+
+test('SVC-SRV-2 指纹闸门只拿连接字段：不得把 dbName 等插件字段送进 SSH 层', async () => {
+  let guardArg = null;
+  const d = deps({ guardHostKey: async (s) => { guardArg = s; return { ok: true, mode: 'pinned' }; } });
+  const svc = createService({ config: cfg, deps: d });
+  await svc.discover('staging');
+  assert.ok(guardArg, 'guardHostKey 必须被调用');
+  assert.equal(guardArg.dbName, undefined, 'SSH 层不应看到 dbName');
+  assert.equal(guardArg.host, '119.29.10.202');
+});
+
+test('SVC-SRV-3 dbfilter 被注释时，runRestore 必须拿到配置里的 dbName', async () => {
+  let gotInstance = null;
+  const d = deps({
+    detectFormat: async () => 'dsh-odoo',
+    readPackageMeta: async () => ({ ok: true, sourceDbName: 'tg-odoo', source: { odooVersion: '19.0-1' } }),
+    discover: async (server) => ({
+      ok: true,
+      instances: [{ dbName: server.dbName || '', odooVersion: '19.0-1', odooContainer: 'c', pgContainer: 'p', addonsPath: '/a', dataPath: '/d' }],
+    }),
+    runRestore: async (a) => { gotInstance = a.instance; return { ok: true, state: 'COMMITTED' }; },
+  });
+  const svc = createService({ config: cfg, deps: d });
+  const r = await svc.restore('staging', null, 'K:/b.tar.enc', {});
+  assert.equal(r.ok, true);
+  assert.equal(gotInstance.dbName, 'tg-odoo', '经 dbfilter 缺失路径后仍要拿到配置库名，否则 runRestore 会拒绝');
+});
