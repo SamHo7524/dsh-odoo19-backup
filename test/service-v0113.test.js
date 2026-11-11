@@ -8,12 +8,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createService } from '../lib/service.js';
-import { readState } from '../lib/task-state.js';
+import { readState, serverStateDir } from '../lib/task-state.js';
 import { readLock } from '../lib/server-lock.js';
+import { serverIdOf } from '../lib/server-id.js';
 
 async function withDir(fn) {
   const dir = await mkdtemp(join(tmpdir(), 'v0113-svc-'));
   try { return await fn(dir); } finally { await rm(dir, { recursive: true, force: true }); }
+}
+
+/** v0.1.17：状态文件在 <dir>/<serverId>/ 下；统一从这里读，兼容旧断言口径。 */
+function readServerState(dir, serverName = 's1') {
+  const cfg = { name: serverName, host: 'h', port: 22, user: 'root', sshConfigAlias: 'alias' };
+  return readState(serverStateDir(dir, serverIdOf(cfg)));
 }
 
 function deps(overrides = {}) {
@@ -43,7 +50,7 @@ test('SVC-1 backup 成功后 transfer-state.json 落盘且 status=completed（�
     const d = deps();
     const svc = createService({ config: cfg(dir), deps: d, stateDir: dir });
     await svc.backup('s1');
-    const s = await readState(dir);
+    const s = await readServerState(dir);
     assert.ok(s, '状态文件必须存在');
     assert.equal(s.status, 'completed');
     assert.equal(s.percent, 100);
@@ -56,7 +63,7 @@ test('SVC-2 status() 以磁盘为准：返回 taskId/kind/status/phase/percent',
     const svc = createService({ config: cfg(dir), deps: deps(), stateDir: dir });
     await svc.backup('s1');
     const st = await svc.status();
-    assert.equal(st.taskId, (await readState(dir)).taskId);
+    assert.equal(st.taskId, (await readServerState(dir)).taskId);
     assert.equal(st.status, 'completed');
     assert.equal(st.kind, 'backup');
     assert.equal(typeof st.percent, 'number');
@@ -108,11 +115,11 @@ test('SVC-5 任务失败/取消后锁释放，可再次启动', async () => {
     const svc = createService({ config: cfg(dir), deps: d, stateDir: dir });
     await assert.rejects(() => svc.backup('s1'), /boom/);
     assert.equal(await readLock(dir, 's1'), null, '失败后锁必须释放');
-    assert.equal((await readState(dir)).status, 'failed');
+    assert.equal((await readServerState(dir)).status, 'failed');
     // 换成功实现后可再次启动（证明锁已释放）
     const svc2 = createService({ config: cfg(dir), deps: deps(), stateDir: dir });
     await svc2.backup('s1');
-    assert.equal((await readState(dir)).status, 'completed');
+    assert.equal((await readServerState(dir)).status, 'completed');
   });
 });
 
@@ -129,7 +136,7 @@ test('SVC-6 进度上报写回磁盘：onProgress 后 readState 的 percent/phas
     const svc = createService({ config: cfg(dir), deps: d, stateDir: dir });
     await svc.backup('s1');
     assert.ok(report, 'onProgress 已传递');
-    const s = await readState(dir);
+    const s = await readServerState(dir);
     assert.equal(s.status, 'completed');
     // 终态 percent=100 覆盖中间值，但中间值必须曾经写盘（由 patchState 保证）
   });

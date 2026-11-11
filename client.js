@@ -3,7 +3,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useState, useCallback, useEffect, useSyncExternalStore } = React;
+    const { useState, useCallback, useEffect, useRef, useSyncExternalStore } = React;
     const pkgName = '@local/dsh-odoo19-backup';
     // useSyncExternalStore 要求稳定引用：这两个常量必须定义在模块级，
     // 绝不能在 getSnapshot/subscribe 里现造新对象/新函数。
@@ -420,9 +420,54 @@ window.__ModuleLoader__.load({
 
           // v0.1.13：Host 任务状态轮询（§6.3 统一状态源 / §14.3 轮询可靠性）。
           // 磁盘 /status 是唯一真相源；按 taskId 丢弃旧响应；kind 隔离备份/恢复。
+          // v0.1.17 修复（用户裁决 §二）：
+          //  ① 移除「终态停表」——磁盘会残留上次终态，旧实现第一次轮询读到
+          //    completed 就 clearInterval，导致下一次任务的进度永远刷不出来
+          //    （症状：点开始备份无进度条，退出设置页重进才有）。轮询只在
+          //    组件卸载时清理；1.5s 本地请求成本极低且天然自愈。
+          //  ② 不同 taskId 的接管不再被旧终态阻挡：新任务按 updatedAt 判定
+          //    新旧后接管；时间戳缺失/无效时保守采用「请求序号新」的数据，
+          //    绝不用旧终态无限期压住新任务。
+          //  ③ 请求序号防乱序：慢的旧 fetch 晚返回时不得覆盖已确认的新数据。
           const [hostTask, setHostTask] = useState(null);
           const [netError, setNetError] = useState(false);
           const [serverLock, setServerLock] = useState({ locked: false });
+          const pollSeq = useRef(0); // 单调递增请求序号：只有最新一次请求允许落状态
+          const terminal = ['completed', 'failed', 'cancelled'];
+          const poll = useCallback(async () => {
+            const seq = ++pollSeq.current;
+            try {
+              const [sr, lr] = await Promise.all([
+                fetch('/odoo-backup/status').then((r) => r.json().catch(() => ({}))),
+                fetch('/odoo-backup/task-lock').then((r) => r.json().catch(() => ({}))).catch(() => ({})),
+              ]);
+              if (seq !== pollSeq.current) return; // 已有更新的请求发出：本次作废
+              setNetError(false);
+              const data = sr?.result ?? sr ?? {};
+              if (data.taskId) {
+                setHostTask((prev) => {
+                  if (!prev || prev.taskId === data.taskId) return { ...data };
+                  // 不同 taskId：按可解析的 updatedAt 判新旧；都不可解析时，
+                  // 本次轮询是「更晚发起的请求」，其数据必然不早于已有状态 → 接管。
+                  const a = Date.parse(prev.updatedAt);
+                  const b = Date.parse(data.updatedAt);
+                  const prevTs = Number.isFinite(a) ? a : null;
+                  const nowTs = Number.isFinite(b) ? b : null;
+                  if (prevTs !== null && nowTs !== null) return nowTs >= prevTs ? { ...data } : prev;
+                  return { ...data };
+                });
+              }
+              setServerLock({ locked: Boolean(lr?.result?.locked ?? lr?.locked), kind: lr?.result?.kind ?? lr?.kind ?? null });
+            } catch {
+              if (seq === pollSeq.current) setNetError(true); // 网络暂时中断 ≠ 任务失败：保留上次真实进度
+            }
+          }, []);
+          useEffect(() => {
+            let alive = true;
+            const timer = setInterval(() => { if (alive) poll(); }, 1500);
+            poll();
+            return () => { alive = false; clearInterval(timer); };
+          }, [poll]);
           // v0.1.13 §3.1：本地备份目录显示/修改/验证（Host 持久化，状态不存浏览器）
           const [dirState, setDirState] = useState({ loaded: false, path: '', fullPath: '', writable: false, editing: false, input: '', busy: false, err: '', ok: '' });
           const loadDir = useCallback(async () => {
@@ -446,33 +491,6 @@ window.__ModuleLoader__.load({
             } catch (e) { setDirState((s) => ({ ...s, busy: false, err: `目录保存失败：${e?.message ?? String(e)}` })); }
           }, [dirState.input]);
           useEffect(() => { loadDir(); }, [loadDir]);
-          useEffect(() => {
-            let alive = true;
-            let timer = null;
-            const terminal = ['completed', 'failed', 'cancelled'];
-            const poll = async () => {
-              try {
-                const [sr, lr] = await Promise.all([
-                  fetch('/odoo-backup/status').then((r) => r.json().catch(() => ({}))),
-                  fetch('/odoo-backup/task-lock').then((r) => r.json().catch(() => ({}))).catch(() => ({})),
-                ]);
-                if (!alive) return;
-                setNetError(false);
-                const data = sr?.result ?? sr ?? {};
-                // 只接受带 taskId 的响应；旧 taskId 响应不覆盖新任务
-                if (data.taskId) setHostTask((prev) => (!prev || prev.taskId === data.taskId || !terminal.includes(prev.status)
-                  ? { ...data } : prev));
-                setServerLock({ locked: Boolean(lr?.result?.locked ?? lr?.locked), kind: lr?.result?.kind ?? lr?.kind ?? null });
-                // 终态或组件已卸载：停止轮询（clearInterval）
-                if (timer && terminal.includes(data.status)) { clearInterval(timer); timer = null; }
-              } catch {
-                if (alive) setNetError(true); // 网络暂时中断 ≠ 任务失败：保留上次真实进度
-              }
-            };
-            poll();
-            timer = setInterval(poll, 1500);
-            return () => { alive = false; if (timer) clearInterval(timer); };
-          }, []);
           const taskLocked = Boolean(serverLock?.locked);
           const busyHint = taskLocked
             ? `服务器正在执行${serverLock.kind === 'restore' ? '恢复' : '备份'}任务，已阻止并发操作`
@@ -972,6 +990,9 @@ window.__ModuleLoader__.load({
                 h(Btn, {
                   disabled: !!busy[s.name] || (taskLocked && true),
                   onClick: () => call(s.name, async (api) => {
+                    // v0.1.17：开始新任务时立即清掉上一次的终态显示（裁决 §二），
+                    // 避免新任务启动前界面仍停留「已完成/失败」旧条；进度由轮询接管。
+                    setHostTask(null);
                     setOne(s.name, 'backing up...');
                     const { result } = await api('/backup', { server: s.name });
                     if (result?.ok) {
@@ -1075,6 +1096,8 @@ window.__ModuleLoader__.load({
                     const pkg = normalizeRestorePath(restorePath[s.name]);
                     if (!pkg) { setOne(s.name, '请先填写备份包完整路径'); return; }
                     call(s.name, async (api) => {
+                      // v0.1.17：与备份一致，开始前清掉旧终态显示（裁决 §二）。
+                      setHostTask(null);
                       setOne(s.name, '预检中...');
                       const pre = await api('/precheck', { server: s.name, packagePath: pkg });
                       const sourceText = pre.sourceDbName

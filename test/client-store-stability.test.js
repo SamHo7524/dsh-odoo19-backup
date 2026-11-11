@@ -27,6 +27,7 @@ const useState = (init) => {
 };
 const useCallback = (fn) => fn;
 const useEffect = () => {}; // 替身：不执行副作用
+const useRef = (init) => ({ current: init }); // v0.1.17：轮询需请求序号
 const storeChecks = [];
 const useSyncExternalStore = (subscribe, getSnapshot) => {
   const a = getSnapshot();
@@ -55,7 +56,7 @@ function loadComponent({ scope }) {
   }
 
   const factoryResult = registered.factory((name) => {
-    if (name === 'react') return { createElement, useState, useCallback, useEffect, useSyncExternalStore };
+    if (name === 'react') return { createElement, useState, useCallback, useEffect, useRef, useSyncExternalStore };
     throw new Error('unknown module ' + name);
   });
 

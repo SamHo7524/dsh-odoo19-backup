@@ -140,8 +140,12 @@ if (!existsSync(finalTgz)) {
   if (pkg.version !== version) {
     die(`缺少 ${tgzName}，且工作区版本(${pkg.version}) ≠ 目标(${version})；拒绝用错误内容打包，请先把该版本的 tarball 放进 ${PKG_DIR}`);
   }
-  const pnpm = join(dirname(NODE), '..', 'pnpm', 'bin', 'pnpm.mjs');
-  if (!existsSync(pnpm)) die(`找不到 pnpm: ${pnpm}`);
+  // pnpm 解析：兼容两种运行时布局，并允许 PNPM_SCRIPT 显式覆盖
+  const pnpm = process.env.PNPM_SCRIPT || [
+    join(dirname(NODE), '..', 'pnpm', 'bin', 'pnpm.mjs'),
+    join(dirname(NODE), '..', '..', 'pnpm', 'bin', 'pnpm.mjs'),
+  ].find(existsSync);
+  if (!pnpm) die('找不到 pnpm：请设置 PNPM_SCRIPT 指向 pnpm.mjs');
   const tmp = join(tmpdir(), `pack-${version}-${Date.now()}`);
   mkdirSync(tmp, { recursive: true });
   execFileSync(NODE, [pnpm, 'pack', '--pack-destination', tmp], { cwd: ROOT, encoding: 'utf8' });

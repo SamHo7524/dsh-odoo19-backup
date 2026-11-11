@@ -1,8 +1,9 @@
 import z from '@deepseek-ai/schemastery';
 import { readFile } from 'node:fs/promises';
 import { createTokenStore, NEUTRALIZE_BOUND_KEYS } from './lib/tokens.js';
-import { readState, patchState } from './lib/task-state.js';
+import { readState, patchState, serverStateDir, readStateCompat } from './lib/task-state.js';
 import { readLock, inspectLock, confirmStaleLock, releaseLock } from './lib/server-lock.js';
+import { serverIdOf } from './lib/server-id.js';
 import { resolveBackupDirectory, validateDirectory, DEFAULT_BACKUP_DIRECTORY } from './lib/backup-directory.js';
 import { createService } from './lib/service.js';
 import { normalizeRestorePath } from './lib/restore-path.js';
@@ -154,6 +155,20 @@ export function apply(ctx, config) {
 /** v0.1.13：统一状态源根目录（transfer-state.json / server-lock.json 同处，§6.3 / §17.1）。 */
 function stateDirOf(config) {
   return unwrapVolatile(config?.backupDirectory) ?? unwrapVolatile(config?.localBackupDir) ?? DEFAULT_BACKUP_DIRECTORY;
+}
+
+/**
+ * v0.1.17：服务器的稳定锁键与隔离状态目录。
+ * 锁键从「可改名的 server.name」升级为 serverConfigId 摘要（规格 §5.1）；
+ * 状态文件写 `<stateDir>/<serverId>/transfer-state.json`。
+ * 返回 null 表示配置里找不到该服务器（调用方按缺参处理）。
+ */
+function serverKeyOf(config, name) {
+  const list = unwrapVolatile(config?.servers) ?? [];
+  const server = (Array.isArray(list) ? list : []).find((s) => s?.name === name);
+  if (!server) return null;
+  const id = serverIdOf(server);
+  return { id, dir: serverStateDir(stateDirOf(config), id) };
 }
 
 /** /task-lock 的默认服务器标识必须与 service 的锁键（server.name）一致；servers 是 volatile 活引用。 */
@@ -348,7 +363,9 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
       return send(200, { ok: true, result: await service.backup(body.server) });
     }
     if (route === '/status') {
-      return send(200, { ok: true, result: await service.status() });
+      // v0.1.17：可带 server 参数读取该服务器自己的隔离状态目录；
+      // 不带时由 service 决定（内存活动任务 → 扫描活动状态）。
+      return send(200, { ok: true, result: await service.status(body.server ?? undefined) });
     }
     if (route === '/restore-domain') {
       // v0.1.14：恢复后使用的站点域名（留空=自动用服务器名）。
@@ -394,10 +411,12 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
     if (route === '/task-lock') {
       // v0.1.13 §17.1：服务器级互斥状态（前端按钮禁用的依据，后端锁才是裁决）。
       // 未指定 server 时检查所有已配置服务器：任一处于活动锁即视为 locked。
+      // v0.1.17：锁键 = 稳定 serverConfigId（不再用可改名的 server.name）。
       const dir = stateDirOf(config);
       const list = unwrapVolatile(config?.servers) ?? [];
-      const ids = (Array.isArray(list) ? list.map((s) => s?.name).filter(Boolean) : []);
-      const targets = body.server ? [body.server] : ids;
+      const targets = body.server
+        ? [serverKeyOf(config, body.server)?.id].filter(Boolean)
+        : (Array.isArray(list) ? list.map((s) => serverIdOf(s)).filter(Boolean) : []);
       let found = null;
       for (const id of targets) {
         const lock = await readLock(dir, id);
@@ -409,26 +428,30 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
     if (route === '/task-cancel') {
       // §9 取消 / §17.1 重启恢复：明确确认后把遗留任务置 cancelled 并释放锁。
       // 只有状态仍属「活动」的任务可取消；终态任务不允许被改成 cancelled。
+      // v0.1.17：按 server 参数定位该服务器自己的隔离状态目录与锁。
       if (body.confirm !== true) throw new Error('取消任务需要明确确认（confirm:true）');
-      const dir = stateDirOf(config);
-      const st = await readState(dir);
+      if (!body.server) throw new Error('缺少 server 参数');
+      const key = serverKeyOf(config, body.server);
+      if (!key) throw new Error(`未找到服务器: ${body.server}`);
+      const dir = key.dir;
+      const st = await readStateCompat(stateDirOf(config), key.id);
       if (!st) throw new Error('当前无持久化任务状态');
       if (['completed', 'failed', 'cancelled'].includes(st.status)) {
         return send(200, { ok: true, alreadyTerminal: st.status });
       }
       const ok = await patchState(dir, st.taskId, { status: 'cancelled', phaseMessage: '用户已取消' });
       if (!ok) throw new Error('任务状态已变更，取消失败（taskId 不匹配）');
-      const ids = (unwrapVolatile(config?.servers) ?? []).map((s) => s?.name).filter(Boolean);
-      for (const id of ids) await releaseLock(dir, id, st.taskId).catch(() => {});
+      await releaseLock(stateDirOf(config), key.id, st.taskId).catch(() => {});
       return send(200, { ok: true, status: 'cancelled', taskId: st.taskId });
     }
     if (route === '/task-lock/confirm-stale') {
       const serverConfigId = body.server ?? defaultServerId(config);
       if (!serverConfigId) throw new Error('缺少 server 参数');
       if (body.confirm !== true) throw new Error('缺少明确确认（confirm:true）');
-      const sd = stateDirOf(config);
-      const r = await confirmStaleLock(sd, serverConfigId, async (taskId) => {
-        const st = await readState(sd);
+      const key = serverKeyOf(config, serverConfigId);
+      if (!key) throw new Error(`未找到服务器: ${serverConfigId}`);
+      const r = await confirmStaleLock(stateDirOf(config), key.id, async (taskId) => {
+        const st = await readStateCompat(stateDirOf(config), key.id);
         return st && st.taskId === taskId ? st.status : null;
       });
       if (!r.ok) throw new Error(r.reason ?? '无法释放遗留锁');

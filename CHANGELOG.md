@@ -8,6 +8,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates a
 
 ---
 
+## [0.1.17] — 2026-11-11
+
+**Task-status polling fix + per-server state isolation.**
+
+### Background (real-machine defect)
+Backups ran fine, yet the UI showed **no progress bar** after clicking "start backup"; leaving the plugin settings page and re-entering was the only way to make it appear.
+
+Two client defects combined, both resting on one premise: `transfer-state.json` is never cleaned up (terminal states linger).
+
+1. **Polling stopped at terminal state**: the first poll after mount read the stale `completed` from disk and immediately cleared the interval, so `/status` was never fetched again — while the new task's `running`/`percent` sat unread on disk.
+2. **Stale terminal state blocked the new task**: even with polling alive, the takeover guard (`prev.taskId === data.taskId || !terminal.includes(prev.status)`) refused to accept the new taskId because the previous round was terminal.
+
+The server side was always correct: `progressReporter` atomically persists every progress event. The defect lived purely in the client's consumption of that state.
+
+### Fixed (scope per the user's ruling)
+- **Removed the terminal-state polling stop**: polling now stops only on unmount; a 1.5 s local request is cheap and self-healing.
+- **Fixed cross-taskId takeover**: a new task takes over after comparing parseable `updatedAt`; when timestamps are missing/invalid, a stale terminal state no longer suppresses a new task indefinitely.
+- **Out-of-order guard**: a monotonically increasing request sequence number (`pollSeq`) discards late responses so they can never overwrite confirmed newer data.
+- **Clear stale terminal display on start**: clicking backup/restore immediately drops the previous terminal bar.
+- **Per-server state isolation**: `<stateDir>/<serverConfigId>/transfer-state.json` replaces the single global file. Two concurrent server backups no longer overwrite each other's state. The lock key is upgraded to the stable `serverConfigId` (digest over `host/port/user/sshConfigAlias`, **excluding the renameable `name`**), so renaming a server keeps its task ownership, lock and state directory.
+- **Legacy global state file read for compatibility only**: it is read back only when its `serverConfigId` matches the requester (or the field is absent, i.e. unclaimed); it is never copied into every server's state, never deleted, and never auto-migrated.
+
+### Explicitly out of scope (deferred by the ruling)
+- HTTP 202 async execution, WebSocket/SSE push: deferred.
+- Automatic cleanup of terminal state files: not done (a lingering terminal state is harmless now that polling no longer depends on it).
+
+### Tests
+**570 / 570** (559 baseline + 11 new: `V17-C1..C4` for client polling/takeover/ordering, `V17-S1..S7` for per-server isolation, two-server concurrency, rename stability, legacy-file compatibility, and `status(server)` restart recovery). The existing `SVC-1..SVC-6` now read the per-server directory and all pass.
+---
+
 ## [0.1.16] — 2026-11-10
 
 **Agent-tool output contract fix: `listServers` returned a bare array while `output.schema` declares `type: object`.**

@@ -11,7 +11,8 @@ function createElement(type, props, ...children) { return { type, props: props ?
 let hooks = []; let cursor = 0;
 const useState = (init) => { const i = cursor++; if (i >= hooks.length) hooks[i] = typeof init === 'function' ? init() : init; return [hooks[i], (v) => { hooks[i] = typeof v === 'function' ? v(hooks[i]) : v; }]; };
 const useCallback = (fn) => fn;
-const useEffect = () => {}; // 替身：不执行副作用（真实 React 会执行）
+const useEffect = () => {}; // 替身：不执行副作用
+const useRef = (init) => ({ current: init }); // v0.1.17：轮询需请求序号
 const useSyncExternalStore = (_s, getSnapshot) => getSnapshot();
 function expand(node) {
   if (node == null || node === false) return node;
@@ -51,7 +52,7 @@ function loadClient() {
   global.setTimeout = () => 0; global.clearTimeout = () => {};
   try { new Function('window', 'fetch', src)(win, async () => ({ json: async () => ({ ok: true }) })); }
   finally { global.setTimeout = st; global.clearTimeout = ct; }
-  const f = registered.factory((n) => { if (n === 'react') return { createElement, useState, useCallback, useEffect, useSyncExternalStore }; throw new Error('unknown ' + n); });
+  const f = registered.factory((n) => { if (n === 'react') return { createElement, useState, useCallback, useEffect, useRef, useSyncExternalStore }; throw new Error('unknown ' + n); });
   let reg = null;
   const scope = makeScope(SERVERS);
   f.apply({

@@ -22,7 +22,8 @@ const useState = (init) => {
   return [state[i], (v) => { state[i] = typeof v === 'function' ? v(state[i]) : v; }];
 };
 const useCallback = (fn) => fn;
-const useEffect = () => {};
+const useEffect = () => {}; // 替身：不执行副作用
+const useRef = (init) => ({ current: init }); // v0.1.17：轮询需请求序号
 const useSyncExternalStore = (subscribe, getSnapshot) => getSnapshot();
 
 function realScope(initial = {}) {
@@ -67,7 +68,7 @@ function loadClient({ scope, fetchStub }) {
   new Function('window', 'fetch', src)(win, fetchStub);
 
   const factoryResult = registered.factory((name) => {
-    if (name === 'react') return { createElement, useState, useCallback, useEffect, useSyncExternalStore };
+    if (name === 'react') return { createElement, useState, useCallback, useEffect, useRef, useSyncExternalStore };
     throw new Error('unknown module ' + name);
   });
 
