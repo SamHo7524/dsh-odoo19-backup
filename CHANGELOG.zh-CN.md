@@ -6,6 +6,44 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.19] — 2026-11-11
+
+**安全收敛：工具出口必须可无损 JSON 化；目标状态未知时，中立化卡片不再提供任何操作按钮。**
+
+### 背景
+2026-11-11 真机排障暴露三个互相独立的缺陷：
+
+1. `discover()` 在发现实例时组装 `note: undefined`。DSH 对工具返回值做 lossless-JSON 校验，
+   `undefined` 值会被整包拒绝——于是**发现成功**反而报 "value is not lossless JSON"，
+   连接失败（note 为字符串）反而正常，出现「失败能用、成功报错」的误导签名。
+   `lib/imports.js` 的 `error: ... : undefined` 同款。
+2. 中立化卡片对**每一台**配置的服务器渲染（含生产机），且两个操作按钮不管状态是否
+   读得出来都照样渲染。生产机没被误操作，只是因为状态读取恰好失败——是偶然防线，
+   不是设计防线。
+3. `/neutralize-status` 响应 `send(200, { ok: true, ...status })`：解析失败返回的
+   `{ ok: false, reason }` 展开后覆盖 `ok`，且没有 `error` 字段，客户端只能显示
+   无用的 "HTTP 200"。
+
+### 修复
+- `lib/discover.js` / `lib/imports.js`：可选的 `note`/`error` 键改为条件展开——没话可说就
+  不出键，从构造上保证可无损 JSON 化。
+- `client.js`：两个中立化操作按钮整体包裹进 `statusKnown`
+  （`!st.err && stat && stat.ok !== false`）。状态未知时卡片只剩错误提示 + 刷新按钮——
+  没有「保持中立化」，也没有「解除中立化（接管生产）」。
+- `index.js` `/neutralize-status`：状态不可读改为 400 并携带真实原因，不再是 200 吞掉
+  `ok:false`。
+- `index.js` `/neutralize-apply`（release）：token 校验后追加 `status.ok` 复核，堵住
+  precheck→apply 之间状态恶化仍放行 SQL 的窗口。
+
+### 测试
+**577 / 577**。新增：`LOSSJSON-1..4`（出口契约套件，含 helper 自证）、`NEUROUTE-9/10`
+（status/apply 的状态不可读闸门）、`NEUUI-9`（状态未知不出操作按钮）。
+
+### 已知边界（如实记录，本次刻意不捆绑）
+- 「恢复目标机」语义目前用「状态可读」近似表达。持久化恢复任务记录作为显式的服务端
+  授权边界，计划于 0.1.20 落地。
+- `serverConnection()` 仍会剥掉 `dbName`，配置兜底库名传不进自动发现（既有问题，单独跟踪）。
+
 ## [0.1.18] — 2026-11-11
 
 **修复 0.1.17 在真实运行验证中暴露的回归：重启后刷新页面看不到最近一次终态。**

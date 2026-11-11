@@ -6,6 +6,47 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.19] — 2026-11-11
+
+**Safety convergence: tool output must be lossless-JSON safe, and the neutralize card no longer offers actions while the target state is unknown.**
+
+### Background
+Live troubleshooting on 2026-11-11 exposed three independent defects around the agent-tool output
+contract and the neutralize card:
+
+1. `discover()` assembled `note: undefined` whenever instances were found. DSH's lossless-JSON
+   validation rejects `undefined` values, so a **successful** discovery died with
+   "value is not lossless JSON" while a failed connection (string note) returned normally —
+   "failure works, success errors". `lib/imports.js` had the same `error: ... : undefined` pattern.
+2. The neutralize card rendered for every configured server (production included), and its two
+   action buttons rendered regardless of whether the neutralize status could be read. Production
+   stayed safe only because status reads happened to fail — an accident, not a design.
+3. `/neutralize-status` answered `send(200, { ok: true, ...status })`; a failed parse
+   (`{ ok: false, reason }`) overwrote `ok` and carried no `error` field, so the client could only
+   show the useless "HTTP 200".
+
+### Fixed
+- `lib/discover.js` / `lib/imports.js`: optional `note`/`error` keys are provided via conditional
+  spread — no key when there is nothing to say. Lossless-JSON safe by construction.
+- `client.js`: the neutralize action buttons are wrapped in `statusKnown`
+  (`!st.err && stat && stat.ok !== false`). With an unknown state the card shows only the error and
+  a refresh button — no "Keep neutralize", no "Release (take over production)".
+- `index.js` `/neutralize-status`: an unreadable status is now a 400 carrying the real reason,
+  instead of a 200 with a swallowed `ok:false`.
+- `index.js` `/neutralize-apply` (release): re-validates `status.ok` after token verification,
+  closing the precheck→apply window in which a degraded status previously still allowed the SQL.
+
+### Tests
+**577 / 577**. New: `LOSSJSON-1..4` (output-contract suite incl. helper self-check),
+`NEUROUTE-9/10` (unreadable-status gates on status/apply), `NEUUI-9` (no action buttons while
+state is unknown).
+
+### Known limits (documented, deliberately not bundled here)
+- "Restore-target" semantics are currently approximated by "status readable". A persistent
+  restore-task record as an explicit server-side authorization boundary is planned for 0.1.20.
+- `serverConnection()` still strips `dbName`, so a configured fallback db name never reaches
+  auto-discovery (pre-existing, tracked separately).
+
 ## [0.1.18] — 2026-11-11
 
 **Fixes a regression that 0.1.17's own runtime verification exposed: after a restart, a page refresh no longer showed the most recent terminal state.**

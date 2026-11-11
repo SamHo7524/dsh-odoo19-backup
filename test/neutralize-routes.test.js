@@ -178,3 +178,24 @@ test('NEUROUTE-8 已解除状态下 precheck 不再发 token', async () => {
   assert.equal(res.payload.alreadyReleased, true);
   assert.equal(tokens.length, 0);
 });
+
+// ---- v0.1.18：状态不可读时的安全闸门（真机 2026-11-11：生产机出现中立化按钮） ----
+
+test('NEUROUTE-9 status 不可读 → /neutralize-status 返回 400 与真实原因（不再吞成 ok:false 无 error）', async () => {
+  const h = await loadHandler();
+  const { deps } = mkDeps({ service: { neutralizeStatus: async () => ({ ok: false, reason: 'psql: relation "payment_provider" does not exist' }) } });
+  const res = mkRes();
+  await h({ req: mkReq('/neutralize-status', { server: 's1' }), res, config: { servers: [] }, tokenStore: { create() {}, verify() {} }, settings: {}, entryId: 'odoo-backup', ...deps });
+  assert.equal(res.statusCode, 400, '状态不可读必须以错误响应，而非 200 + ok:false');
+  assert.match(res.payload.error, /payment_provider/, 'error 必须携带真实 reason，客户端才不会显示 HTTP 200');
+});
+
+test('NEUROUTE-10 release 时 status 不可读 → 拒绝且不调用 applyNeutralize（堵 precheck→apply 窗口）', async () => {
+  const h = await loadHandler();
+  const { deps, calls } = mkDeps({ service: { neutralizeStatus: async () => ({ ok: false, reason: '状态读取失败', dbName: 'toogel' }) } });
+  const res = mkRes();
+  await h({ req: mkReq('/neutralize-apply', { server: 's1', action: 'release', confirmToken: 'tok-1' }), res, config: { servers: [] }, tokenStore: { create() {}, verify() {} }, settings: {}, entryId: 'odoo-backup', ...deps });
+  assert.notEqual(res.statusCode, 200);
+  assert.match(res.payload.error, /状态读取失败|不可读/);
+  assert.equal(calls.filter((c) => c.apply).length, 0, 'status 不可读绝不允许执行解除 SQL');
+});

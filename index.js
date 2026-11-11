@@ -506,7 +506,12 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
     // ---- v0.1.14 收尾：中立化状态管理（保持 / 解除）----
     if (route === '/neutralize-status') {
       if (!body.server) throw new Error('缺少 server 参数');
-      return send(200, { ok: true, ...(await service.neutralizeStatus(body.server)) });
+      // v0.1.18：状态不可读必须以错误响应并携带真实原因。
+      // 旧实现 send(200, { ok:true, ...status }) 会被 status.ok=false 覆盖，
+      // 且该失败对象只有 reason 没有 error 字段 → 客户端只能显示 "HTTP 200"。
+      const status = await service.neutralizeStatus(body.server);
+      if (!status?.ok) throw new Error(status?.reason ?? '中立化状态不可读');
+      return send(200, { ok: true, ...status });
     }
     if (route === '/neutralize-precheck') {
       if (!body.server) throw new Error('缺少 server 参数');
@@ -556,6 +561,10 @@ async function handleUiRequest({ req, res, config, service, tokenStore, neutrali
         neutralizeTokenStore.verify(body.confirmToken, {
           server: body.server, action: 'release', dbName: status?.dbName,
         });
+        // v0.1.18：defense-in-depth —— 状态不可读一律拒绝。
+        // 旧实现只拿 status.dbName 做 token 绑定校验，ok=false 仍会放行执行 SQL；
+        // precheck→apply 之间状态恶化（或伪造 token 来源）时这是最后一道闸。
+        if (!status?.ok) throw new Error(status?.reason ?? '中立化状态不可读，拒绝解除');
       }
       const codes = Array.isArray(body.enablePaymentCodes)
         ? body.enablePaymentCodes

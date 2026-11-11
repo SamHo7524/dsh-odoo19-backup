@@ -80,3 +80,21 @@ test('NEUUI-8 提供可选的支付 code 输入（默认空 = 全部保持禁用
   assert.ok(src.includes('enablePaymentCodes'), '应把 code 列表传给后端');
   assert.match(seg, /留空/, '必须说明留空语义（全部保持禁用）');
 });
+
+// ---- v0.1.18：状态未知绝不出操作按钮（真机 2026-11-11：生产机也渲染了中立化按钮） ----
+
+test('NEUUI-9 状态未知/读取失败时不得渲染中立化操作按钮', () => {
+  const seg = cardSeg();
+  // statusKnown 的定义：err 为空、status 已读到、且解析结果 ok !== false，三者缺一不可
+  assert.match(
+    seg,
+    /statusKnown\s*=\s*!st\.err\s*&&\s*stat\s*&&\s*stat\.ok\s*!==\s*false/,
+    '必须以「无错误 + 状态已读到 + 解析 ok」三条件定义 statusKnown',
+  );
+  // 两个操作按钮所在的按钮行必须整体受 statusKnown 保护
+  const btnRow = seg.indexOf("flexWrap: 'wrap'");
+  assert.ok(btnRow > 0, '应找到操作按钮行（flexWrap 容器）');
+  const rowStart = seg.lastIndexOf('h(\'div\'', btnRow);
+  const between = seg.slice(rowStart - 40, btnRow);
+  assert.match(between, /statusKnown\s*&&/, '「保持中立化/解除中立化」按钮行必须被 statusKnown 条件包裹');
+});

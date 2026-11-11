@@ -1150,6 +1150,12 @@ window.__ModuleLoader__.load({
                 servers.map((s) => {
                   const st = neuState[s.name] ?? {};
                   const stat = st.status;
+                  // v0.1.18：状态未知（读取失败 / 尚未读到 / 解析失败）绝不出操作按钮。
+                  // 中立化按钮语义上是「恢复目标机」专属（接管生产决定），插件没有
+                  // 「恢复机 vs 生产机」标记，所以用「状态可读」做闸：生产机/异常机
+                  // 状态读不到就只剩错误提示 + 刷新，不给误操作入口（真机 2026-11-11）。
+                  // 二次确认块不受影响：showWarn 只可能由成功的预检产生。
+                  const statusKnown = !st.err && stat && stat.ok !== false;
                   const showWarn = Array.isArray(st.warnings) && st.warnings.length > 0;
                   return h('div', { key: s.name, style: { padding: 10, marginBottom: 8, border: `1px solid ${T.border}`, borderRadius: 6 } },
                     h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 } },
@@ -1172,7 +1178,7 @@ window.__ModuleLoader__.load({
                       h('div', null,
                         `支付提供商：启用 ${stat.paymentEnabled ?? 0} / 禁用 ${stat.paymentDisabled ?? 0}`),
                     ),
-                    h('div', { style: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
+                    statusKnown && h('div', { style: { display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' } },
                       h(Btn, { disabled: !!st.busy, onClick: () => keepNeutralize(s.name) }, '保持中立化'),
                       h(Btn, {
                         tone: 'danger',
