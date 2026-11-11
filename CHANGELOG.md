@@ -6,6 +6,33 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.25] — 2026-11-11
+
+**V6/V7 verification now asks Odoo itself instead of guessing HTTP routes — and V6 checks the failure class it was meant to catch.**
+
+### Background (blocked restores on the rebuilt target)
+After 0.1.24 the restore finally reached verification and failed with `临时环境验证失败：V6 站点可访问, V7 附件内容寻址`, even though the temporary database was healthy (167 installed modules) and every custom module had been deployed.
+
+Evidence from the target:
+
+- The container **had** been restarted by the new 0.1.23 stage (`StartedAt` moved to 13:44:10), and `website_clarity` was loaded — `'clarity_project_id' in env['website']._fields` → `True`.
+- `GET /` returned **303**, `/shop` → **404**, and `/web/content/<id>` → a 299-byte error page. V6 demanded HTTP 200 with >10 KB, V7 compared a downloaded file's sha1. Both probes also ran **without a `?db=` parameter**, so they hit whatever database the host header resolved to — on this deployment `dbfilter` is commented out, so that was an empty database, not the temp DB.
+
+So the verification was measuring the wrong thing: deployment-specific redirect routes and the wrong database.
+
+### Changed
+- **V6 — "模块代码已载入"**: run `odoo shell` inside the container against the temp DB and `importlib.import_module("odoo.addons.<module>")` for every installed module; any module that fails to import is reported by name. This is exactly the "code deployed after process start" class the check exists for, and it needs no HTTP or request context. (An earlier attempt to render `web.login_layout` failed with `KeyError: 'website'` — templates need a request; probing through the template was the wrong instrument.)
+- **V7 — "附件内容寻址"**: read `ir.attachment.raw` inside Odoo and compare its sha1 with the filestore filename. No `/web/content` routing involved.
+- HTTP status probes are kept as **informational** text in the V6 detail (`HTTP 参考：…`), never gating.
+- `odoo shell` is invoked with explicit `--db_host/--db_user/--db_password` from the container env — without them it tries a local unix socket and fails.
+
+### Tests
+**619 / 619** (baseline 608 + 11: `V6-P1..P3` module-code check incl. named failures, `V7-P1..P4` attachment sha1, `RS-1..5` from 0.1.23 remain). Verified against the real target before release: `MODCHECK_TOTAL=167`, `MODCHECK_BAD=none`, `V7_SHA` == `V7_NAME` (140688 bytes).
+
+### Security / unchanged
+No change to authorization, encryption, tokens, deploy/restart, or the switch/rollback state machine. Verification only became more truthful.
+
+---
 ## [0.1.24] — 2026-11-11
 
 **Fix: the configured `dbName` never reached discovery (it was stripped by `serverConnection`), so restores on a host with a commented-out `dbfilter` were refused.**

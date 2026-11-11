@@ -7,8 +7,8 @@ A [DeepSeek Harness](https://github.com/) (DSH) plugin for **Odoo 19 remote back
 It backs up the database, filestore, addons, runtime dependencies and configuration over SSH, and restores through a temp-database verification, downtime switch and rollback-on-failure state machine. Host-key trust is **fail-closed** — an unpinned or changed host key is refused.
 
 - Bundle package name: `@local/dsh-odoo19-backup`
-- Current version: `0.1.24`
-- Install source: `github:SamHo7524/dsh-odoo19-backup#v0.1.24`
+- Current version: `0.1.25`
+- Install source: `github:SamHo7524/dsh-odoo19-backup#v0.1.25`
 - License: private / internal use (`private: true` in `package.json`)
 
 > This plugin supports **Odoo 19 only**. Cross-major-version restore (e.g. 19 → 20) is refused by design.
@@ -20,13 +20,13 @@ It backs up the database, filestore, addons, runtime dependencies and configurat
 In DSH, install the bundle directly from this repository:
 
 ```
-github:SamHo7524/dsh-odoo19-backup#v0.1.24
+github:SamHo7524/dsh-odoo19-backup#v0.1.25
 ```
 
-Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.24):
+Or install the release tarball from the [Releases page](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.25):
 
 ```
-dsh-odoo19-backup-0.1.24.tgz
+dsh-odoo19-backup-0.1.25.tgz
 ```
 
 > Use `plugin_manager` (`install_bundle`) rather than copying files into `node_modules`: DSH re-runs `pnpm install` from the profile's `package.json` on every start, so only a durable install spec survives a restart.
@@ -143,9 +143,9 @@ The project is **not** a local git checkout during development; releases are pub
 
 ## Status & limitations
 
-- 608 / 608 unit tests pass; `node --check` clean across 30 files.
+- 619 / 619 unit tests pass; `node --check` clean across 30 files.
 - Real-machine verified: `odoo_backup` `listServers` / `test` over SSH, `odoo_restore` status, the native settings section and its HTTP routes.
 - **Not executed / not authorized**: real R1 downtime switch on the production primary database, agent-driven browser click-through, production deployment. Production servers were read-only throughout development.
 - Host-side changes require a **full DSH restart**; the Client half only needs a hard refresh.
 
-See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.1.24), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.
+See [CHANGELOG.md](./CHANGELOG.md) for the full history (0.1.0 → 0.1.25), including the root-cause chains behind the path, DB-name, addons-deploy, volatile-config and tool-output defects.

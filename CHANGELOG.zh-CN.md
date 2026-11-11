@@ -6,6 +6,33 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.25] — 2026-11-11
+
+**V6/V7 验证改为直接问 Odoo 本身，不再靠猜 HTTP 路由；V6 也终于检查了它本来要拦的那类故障。**
+
+### 背景（重建后的目标机上恢复被验证卡住）
+0.1.24 之后恢复终于走到验证阶段，却报 `临时环境验证失败：V6 站点可访问, V7 附件内容寻址`——尽管临时库是健康的（167 个已安装模块），所有自建模块也都已部署。
+
+目标机取证：
+
+- 容器**确实被 0.1.23 新增的重启阶段重启过**（`StartedAt` 变成 13:44:10），`website_clarity` 已加载——`'clarity_project_id' in env['website']._fields` → `True`。
+- `GET /` 返回 **303**、`/shop` → **404**、`/web/content/<id>` → 299 字节错误页。而 V6 要求 HTTP 200 且 >10 KB，V7 比对下载文件的 sha1。两个探针还都**不带 `?db=` 参数**，只能落到 Host 头解析出的那个库——本机 `dbfilter` 被注释，于是落到一个空库，而不是临时库。
+
+结论：验证测的是「部署相关的重定向路由」和「错误的库」，而不是站点本身。
+
+### 变更
+- **V6 —— 「模块代码已载入」**：在容器内对临时库执行 `odoo shell`，对每个已安装模块做 `importlib.import_module("odoo.addons.<模块>")`，导不进来的按名字点名。这正是「代码在进程启动后才部署」这一类故障，且不需要 HTTP/request 上下文。（先前尝试渲染 `web.login_layout` 报 `KeyError: 'website'`——模板需要 request，用模板探测是错误的工具。）
+- **V7 —— 「附件内容寻址」**：在 Odoo 内读 `ir.attachment.raw` 的 sha1，与 filestore 文件名比对，不经过 `/web/content` 路由。
+- HTTP 状态探测保留为 V6 明细里的**参考信息**（`HTTP 参考：…`），不再作为通过条件。
+- `odoo shell` 显式传 `--db_host/--db_user/--db_password`（取容器 env）——不传它会去连本地 unix socket 而失败。
+
+### 测试
+**619 / 619**（基线 608 + 11：`V6-P1..P3` 模块代码检查含点名失败、`V7-P1..P4` 附件 sha1、0.1.23 的 `RS-1..5` 保留）。发布前已在真机验证：`MODCHECK_TOTAL=167`、`MODCHECK_BAD=none`、`V7_SHA` == `V7_NAME`（140688 字节）。
+
+### 安全 / 未变
+授权、加密、令牌、部署与重启、切换/回滚状态机全部未改。只是让验证更诚实。
+
+---
 ## [0.1.24] — 2026-11-11
 
 **修复：配置里的 `dbName` 从未到达 discovern（被 `serverConnection` 剥掉），导致 `dbfilter` 被注释的机器上恢复被拒。**
