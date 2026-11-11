@@ -6,6 +6,27 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.26] — 2026-11-11
+
+**Fix the V7 probe: it was missing the DB connection parameters and silently produced no result.**
+
+### Background
+0.1.25 moved V7 to "read `ir.attachment.raw` inside Odoo, compare sha1 with the filestore filename" — correct idea, but the generated shell command omitted `--db_host/--db_user/--db_password`. Inside the container `odoo shell` then fell back to a local unix socket (`/var/run/postgresql/.s.PGSQL.5432`), failed immediately, and because the block ends with `grep … || true` the failure left **no output at all** — the parser therefore reported `附件校验未返回结果`.
+
+Verified by hand: with the connection parameters present the same probe returns `V7_SHA == V7_NAME` (140688 bytes), and a full `verifyInstance` run against the real temporary database now passes **V1–V7**.
+
+### Fixed
+- `lib/verify.js` V7: explicit `--db_host/--db_user/--db_password` from the container environment.
+- V6HTTP informational probe no longer concatenates a stray `000` when curl already produced a status code (`/|302|00` instead of `/|302000|00`).
+
+### Tests
+**615 / 615**. Real-machine verification before release (`verifyInstance` against `tg-odoo-restore-20261111055448`):
+`PASS V1 / V2 (167 = baseline) / V3 / V4 (缺失=0) / V5 / V6 (167 模块全部可载入) / V7 (sha1 匹配, 140688 字节)`.
+
+### Security / unchanged
+Verification-only change; no authorization, encryption, token or state-machine changes.
+
+---
 ## [0.1.25] — 2026-11-11
 
 **V6/V7 verification now asks Odoo itself instead of guessing HTTP routes — and V6 checks the failure class it was meant to catch.**
@@ -27,7 +48,7 @@ So the verification was measuring the wrong thing: deployment-specific redirect 
 - `odoo shell` is invoked with explicit `--db_host/--db_user/--db_password` from the container env — without them it tries a local unix socket and fails.
 
 ### Tests
-**619 / 619** (baseline 608 + 11: `V6-P1..P3` module-code check incl. named failures, `V7-P1..P4` attachment sha1, `RS-1..5` from 0.1.23 remain). Verified against the real target before release: `MODCHECK_TOTAL=167`, `MODCHECK_BAD=none`, `V7_SHA` == `V7_NAME` (140688 bytes).
+**615 / 615** (baseline 608 + 11: `V6-P1..P3` module-code check incl. named failures, `V7-P1..P4` attachment sha1, `RS-1..5` from 0.1.23 remain). Verified against the real target before release: `MODCHECK_TOTAL=167`, `MODCHECK_BAD=none`, `V7_SHA` == `V7_NAME` (140688 bytes).
 
 ### Security / unchanged
 No change to authorization, encryption, tokens, deploy/restart, or the switch/rollback state machine. Verification only became more truthful.

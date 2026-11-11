@@ -6,6 +6,27 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.26] — 2026-11-11
+
+**修复 V7 探针：漏传数据库连接参数，导致它静默地什么也没返回。**
+
+### 背景
+0.1.25 把 V7 改成「在 Odoo 内读 `ir.attachment.raw` 的 sha1 与 filestore 文件名比对」——思路对，但生成的 shell 命令漏了 `--db_host/--db_user/--db_password`。容器内的 `odoo shell` 于是回退去连本地 unix socket（`/var/run/postgresql/.s.PGSQL.5432`），当场失败；又因为该块以 `grep … || true` 结尾，失败时**一行输出都没有**，解析器只能报「附件校验未返回结果」。
+
+手工验证：补上连接参数后同一探针返回 `V7_SHA == V7_NAME`（140688 字节）；对真实临时库完整跑 `verifyInstance`，**V1–V7 全部通过**。
+
+### 修复
+- `lib/verify.js` 的 V7：显式从容器环境传 `--db_host/--db_user/--db_password`。
+- V6HTTP 参考探针不再在 curl 已拿到状态码时又拼接一个多余的 `000`（`/|302|00`，不再是 `/|302000|00`）。
+
+### 测试
+**615 / 615**。发布前真机验证（对 `tg-odoo-restore-20261111055448` 跑 `verifyInstance`）：
+`PASS V1 / V2 (167 = 基线) / V3 / V4 (缺失=0) / V5 / V6 (167 模块全部可载入) / V7 (sha1 匹配, 140688 字节)`。
+
+### 安全 / 未变
+纯验证改动；授权、加密、令牌、状态机均未变。
+
+---
 ## [0.1.25] — 2026-11-11
 
 **V6/V7 验证改为直接问 Odoo 本身，不再靠猜 HTTP 路由；V6 也终于检查了它本来要拦的那类故障。**
@@ -27,7 +48,7 @@
 - `odoo shell` 显式传 `--db_host/--db_user/--db_password`（取容器 env）——不传它会去连本地 unix socket 而失败。
 
 ### 测试
-**619 / 619**（基线 608 + 11：`V6-P1..P3` 模块代码检查含点名失败、`V7-P1..P4` 附件 sha1、0.1.23 的 `RS-1..5` 保留）。发布前已在真机验证：`MODCHECK_TOTAL=167`、`MODCHECK_BAD=none`、`V7_SHA` == `V7_NAME`（140688 字节）。
+**615 / 615**（基线 608 + 11：`V6-P1..P3` 模块代码检查含点名失败、`V7-P1..P4` 附件 sha1、0.1.23 的 `RS-1..5` 保留）。发布前已在真机验证：`MODCHECK_TOTAL=167`、`MODCHECK_BAD=none`、`V7_SHA` == `V7_NAME`（140688 字节）。
 
 ### 安全 / 未变
 授权、加密、令牌、部署与重启、切换/回滚状态机全部未改。只是让验证更诚实。
