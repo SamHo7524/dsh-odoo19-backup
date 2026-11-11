@@ -6,6 +6,26 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.18] — 2026-11-11
+
+**修复 0.1.17 在真实运行验证中暴露的回归：重启后刷新页面看不到最近一次终态。**
+
+### 背景
+0.1.17 把 `transfer-state.json` 按服务器隔离后，无参 `/status`（设置页默认轮询口径）
+只返回**活动**状态（`running`/`paused`）；全部任务结束后返回 `taskId: null`。
+同一 Host 进程内不会暴露问题（内存指针仍指向该服务器），但只要 DSH 重启再刷新页面，
+上一次 `completed` 就再也显示不出来 —— 违反规格 §6.1「刷新后 UI 从该文件读取并正确恢复
+最终状态（completed/failed/cancelled 均持久化，不回退成 0% 或『进行中』）」。
+
+### 修复
+- `lib/service.js` 的无参 `status()`：先取 `updatedAt` 最新的活动状态（避免刚完成的旧终态
+  盖住正在跑的任务）；无活动任务时回落到 `updatedAt` 最新的终态。`running` 仍严格由
+  `status === 'running'` 决定，终态绝不误报为进行中。
+- 旧全局文件的归属过滤保持不变（`serverConfigId` 与已配置服务器不符时跳过）。
+
+### 测试
+**570 / 570**。`V17-S3` 改为断言「重启后无参 `status()` 必须能返回某个服务器的真实终态，
+且 `running === false`」——这条断言正是本次回归的直接护栏。
 ---
 
 ## [0.1.17] — 2026-11-11

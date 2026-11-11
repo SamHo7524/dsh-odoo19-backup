@@ -7,8 +7,8 @@
 通过 SSH 备份数据库、filestore、addons、运行时依赖与配置；恢复采用「临时库验证 → 停机切换 → 失败自动回滚」状态机。主机密钥信任 **fail-closed**：未固定或指纹变化一律拒绝连接。
 
 - 包名：`@local/dsh-odoo19-backup`
-- 当前版本：`0.1.17`
-- 安装源：`github:SamHo7524/dsh-odoo19-backup#v0.1.17`
+- 当前版本：`0.1.18`
+- 安装源：`github:SamHo7524/dsh-odoo19-backup#v0.1.18`
 - 许可：内部使用（`package.json` 中 `private: true`）
 
 > 本插件**仅支持 Odoo 19**。跨大版本恢复（如 19 → 20）按设计直接拒绝。
@@ -20,13 +20,13 @@
 在 DSH 中直接从本仓库安装 bundle：
 
 ```
-github:SamHo7524/dsh-odoo19-backup#v0.1.17
+github:SamHo7524/dsh-odoo19-backup#v0.1.18
 ```
 
-或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.17) 下载安装包：
+或从 [Releases 页面](https://github.com/SamHo7524/dsh-odoo19-backup/releases/tag/v0.1.18) 下载安装包：
 
 ```
-dsh-odoo19-backup-0.1.17.tgz
+dsh-odoo19-backup-0.1.18.tgz
 ```
 
 > 请用 `plugin_manager`（`install_bundle`）安装，不要手工往 `node_modules` 里拷文件：DSH 每次启动都会按 profile 的 `package.json` 重跑 `pnpm install`，只有持久的安装 spec 才能在重启后存活。
@@ -146,4 +146,4 @@ scripts/            release-sync-check.mjs（发布一致性闸门）
 - **未执行 / 未授权**：生产主库真实 R1 停机切换、agent 浏览器内点击验证、生产部署。开发全程生产服务器只读。
 - Host 半侧改动需**完全重启 DSH**；Client 半侧硬刷新即可。
 
-完整 0.1.0 → 0.1.17 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。
+完整 0.1.0 → 0.1.18 历史（含路径、库名、addons 部署、volatile 配置、工具输出契约等缺陷的根因链）见 [CHANGELOG.md](./CHANGELOG.md)。

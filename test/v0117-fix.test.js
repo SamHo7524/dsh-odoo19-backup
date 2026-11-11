@@ -260,8 +260,11 @@ test('V17-S3 status(server) 读各服务器自己的状态；无参扫描只认�
     assert.equal(sb.status, 'completed');
     assert.notEqual(sa.taskId, sb.taskId, '各服务器读到自己的 taskId');
     const sweep = await svc2.status();
-    assert.equal(sweep.status, null, '无参扫描：终态不是活动状态，不误报 running');
-    assert.equal(sweep.running, false);
+    // 规格 §6.1：刷新/重启后 UI 必须仍能恢复最近一次终态，不回退成「无任务」。
+    assert.equal(sweep.running, false, '无参扫描不得把终态误报成 running');
+    assert.ok(sweep.taskId, '终态必须可恢复（taskId 不为空）');
+    assert.ok(['completed', 'failed', 'cancelled'].includes(sweep.status), '返回真实终态');
+    assert.ok([sa.taskId, sb.taskId].includes(sweep.taskId), '终态枚举自各服务器自己的状态文件');
   });
 });
 

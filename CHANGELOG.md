@@ -6,6 +6,29 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.18] — 2026-11-11
+
+**Fixes a regression that 0.1.17's own runtime verification exposed: after a restart, a page refresh no longer showed the most recent terminal state.**
+
+### Background
+With the per-server `transfer-state.json` layout introduced in 0.1.17, the parameterless `/status`
+(the settings card's default poll) returned only **active** states (`running`/`paused`) and
+`taskId: null` once everything had finished. Inside the same Host process this was invisible
+(the in-memory pointer still named that server), but after a DSH restart plus a page refresh the
+previous `completed` could never be shown again — violating spec §6.1 ("after a refresh the UI reads
+that file and correctly restores the final state; completed/failed/cancelled are persisted and never
+fall back to 0% or 'in progress'").
+
+### Fixed
+- `lib/service.js`'s parameterless `status()`: take the active state with the newest `updatedAt`
+  first (so a just-finished terminal state cannot mask a running task), then fall back to the newest
+  terminal state when nothing is active. `running` is still strictly `status === 'running'`, so a
+  terminal state is never reported as in progress.
+- Legacy global-file ownership filtering is unchanged (`serverConfigId` mismatches are skipped).
+
+### Tests
+**570 / 570**. `V17-S3` now asserts that a parameterless `status()` after a restart returns some
+server's real terminal state with `running === false` — the direct guard for this regression.
 ---
 
 ## [0.1.17] — 2026-11-11
