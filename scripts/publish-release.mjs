@@ -124,7 +124,11 @@ if (!releasesOnly) {
 // ---------- 2. 测试 ----------
 if (!releasesOnly) {
   log('=== tests ===');
-  const out = execFileSync(NODE, ['--test', 'test/**/*.test.js'], { cwd: ROOT, encoding: 'utf8' });
+  // v0.1.27：串行执行（--test-concurrency=1）。
+  // 若干既有测试（service-v0113 / v0117-fix 等）共用固定状态目录与锁文件，
+  // 并行跑时偶发互相踩踏（SVC-3 / V17-S2 间歇性失败），会让发布门禁误报。
+  // 串行后连续 3 次稳定 646/646，代价是耗时略增，换来门禁可信。
+  const out = execFileSync(NODE, ['--test', '--test-concurrency=1', 'test/**/*.test.js'], { cwd: ROOT, encoding: 'utf8' });
   const num = (re) => out.split('\n').map((l) => l.match(re)).filter(Boolean).at(-1)?.[1];
   const pass = num(/^# pass (\d+)/) ?? num(/^ℹ pass (\d+)/);
   const fail = num(/^# fail (\d+)/) ?? num(/^ℹ fail (\d+)/) ?? '0';

@@ -6,6 +6,93 @@ All notable changes to `dsh-odoo19-backup` are documented here. Versions `0.1.0`
 
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Dates are in Asia/Shanghai (UTC+8).
 
+## [0.1.27] — 2026-11-12
+
+**Chunked SCP downloads finally have a timeout and real progress: a wedged transfer now fails instead of silently sitting at 64% forever.**
+
+### Background (2026-11-12 production incident: backup stalled mid-download with no error)
+
+A backup of `toogel` (47.121.205.143) was started:
+
+- 16:34:19 task created; 16:36 the remote dump/pack/split finished (6 chunks, 590,888,960 B).
+- 16:40:59 chunk 1 (100 MiB) downloaded and passed its SHA-256 check (progress 64%).
+- **After that, chunk 2 never moved a single byte. `transfer-state.json` was never written again,
+  and the UI sat at 64% without reporting any error.**
+- 16:43:19 DSH's auto-updater tried to install rc.2 and failed (`MoveFileExW` error 32, `K:\DSH` in use).
+- 16:47:27 DSH restarted → the `scp` child spawned in the host process was killed with it → the task
+  stayed `running` (non-terminal) forever, the server lock stayed fail-closed, and the user could not
+  simply retry.
+
+The root cause is an **asymmetry between the two download paths**:
+
+| Path | Timeout | Process kill | Progress |
+|:--|:--|:--|:--|
+| Single-file `scpDownload` (`lib/backup.js`) | ✅ `setTimeout` | ✅ `kill('SIGKILL')` | ✅ polls local file growth every 2s |
+| Chunked `realScp` (`lib/chunk-transfer.js`) | ❌ | ❌ | ❌ only `child.on('close')` |
+
+Production backup packages are consistently ~590 MB, so they **always take the chunked path** —
+precisely the path with no guardrails. Worse: **`transferTimeoutMs` was a dead config** — defined only
+in `index.js`'s schema (default 3600000, described as "transfer timeout (ms)") with **no consumer
+anywhere in the plugin**. Users believed they had a 1-hour transfer timeout; it never took effect.
+
+### Fixed
+
+- **`realScp` in `lib/chunk-transfer.js`**: the three mechanisms already proven in `scpDownload` are
+  now reused — `timeoutMs` rejects after `kill('SIGKILL')` (message contains "timeout"); `onProgress`
+  reports **real local file growth** (no percentage is invented when `expectedBytes` is unknown);
+  and success / non-zero exit / timeout all funnel through a single `finish()` that clears every timer
+  (no leaks).
+- **`downloadAll`**: forwards `timeoutMs`, per-chunk `expectedBytes` and the in-chunk `onProgress` to
+  scp, translating per-chunk byte growth into overall progress. **Intermediate `downloadedBytes` is
+  monotonic and always < totalBytes; `percent` is capped at 99% and only reaches 100% once every chunk
+  is `verified`** (no fake completion).
+- **`lib/backup.js`**: `runBackup` accepts `transferTimeoutMs` and passes it to `downloadAll`.
+- **`lib/service.js`**: `backup()` consumes `config.transferTimeoutMs`, falling back to 3600000 for
+  missing/invalid values. **The dead config is now wired end to end.**
+
+### Tests
+
+**646 / 646 passing, 0 failing** (baseline 632 + 14 new).
+
+New `test/chunk-timeout-progress.test.js` (9 cases, CTP-1..9): timeout kills and rejects with the
+expected message; non-zero exit carries the exit code; polling must stop after success and after
+timeout; real file growth produces multiple progress reports; unknown total size invents nothing;
+parameter pass-through; intermediate states exist; an in-chunk over-report does not change the final
+state.
+
+New `test/transfer-timeout-wiring.test.js` (4 cases, CTW-1..4): the full config → service → runBackup
+→ downloadAll chain, including the "unset falls back to 1 hour" case. Verified by mutation testing
+(reverting the wiring to the old code makes them fail), so they are not false greens.
+
+Also synced 2 stale assertions left behind by the 0.1.27 restore-path changes:
+`buildTempRestoreScript` no longer passes `-n` by default (added a case that `neutralize:true` does),
+and the V8 check uses `curl -sL` so it must match "follows redirects" rather than a literal `-L`.
+
+### Compatibility
+
+**Zero breakage**: manifest format, chunk naming, SHA-256 verification, resumable download
+(`findResumableBackup`), the server lock (`server-lock.json`), the six-state machine and the restore
+flow are all unchanged. This release does not add boot-time auto-resume and does not refactor the
+state machine.
+
+### Known limitations
+
+- **A restart does not automatically reattach a partially downloaded task**: resuming is still
+  triggered by the user re-initiating a backup (`findResumableBackup` scans `manifest.json` plus the
+  chunk files already on disk). That is by design, not a defect.
+- **A task left `running` across a restart still keeps the lock fail-closed**: it must be resolved
+  explicitly via `/task-cancel` (the `server` parameter takes the **server name**, not the
+  serverConfigId) or `/task-lock/confirm-stale`.
+- The timeout is **per chunk** (1 hour by default), not a "no bytes for N seconds" silent watchdog.
+  The progress heartbeat improves observability only; it does not change timeout semantics.
+
+### Security / unchanged
+
+Authorization, the host fingerprint gate, encryption (mandatory R10), confirmToken, the neutralize
+option and the version gate are untouched.
+
+---
+
 ## [0.1.26] — 2026-11-11
 
 **Fix the V7 probe: it was missing the DB connection parameters and silently produced no result.**

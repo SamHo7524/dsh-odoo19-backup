@@ -6,6 +6,84 @@
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)。日期均为 Asia/Shanghai（UTC+8）。
 
+## [0.1.27] — 2026-11-12
+
+**分片 SCP 下载终于有超时和真实进度：挂死的传输会失败，而不是永远静默地停在 64%。**
+
+### 背景（2026-11-12 真机事故：备份下载中途停住，界面不报错）
+
+对 `toogel`（47.121.205.143）发起备份：
+
+- 16:34:19 任务创建；16:36 远端 dump/打包/切片完成（6 片，590,888,960 B）。
+- 16:40:59 第 1 片（100 MiB）下载完成并通过 SHA-256 校验（进度 64%）。
+- **此后第 2 片一个字节都没进来，`transfer-state.json` 再没被写过，界面停在 64% 且不报错。**
+- 16:43:19 DSH 自动更新尝试安装 rc.2，失败（`MoveFileExW` error 32，`K:\DSH` 被占用）。
+- 16:47:27 DSH 重启 → 宿主进程内 `spawn` 的 `scp` 子进程被连带杀掉 → 任务永久 `running`
+  （非终态），服务器锁 fail-closed，用户无法直接重跑。
+
+根因是**两条下载路径的护栏不对等**：
+
+| 路径 | 超时 | 进程终止 | 进度 |
+|:--|:--|:--|:--|
+| 单文件 `scpDownload`（`lib/backup.js`） | ✅ `setTimeout` | ✅ `kill('SIGKILL')` | ✅ 每 2s 轮询本地文件增长 |
+| 分片 `realScp`（`lib/chunk-transfer.js`） | ❌ | ❌ | ❌ 只有 `child.on('close')` |
+
+而生产备份包稳定在 ~590 MB，**必然走分片路径** —— 恰好永远落在没有护栏的那条路上。
+更关键的是：**`transferTimeoutMs` 当时是死配置** —— 只在 `index.js` 的 schema 里定义
+（默认 3600000，描述「传输超时（毫秒）」），**全插件没有任何消费者**。
+用户以为配了 1 小时超时，实际永不生效。
+
+### 修复
+
+- **`lib/chunk-transfer.js` 的 `realScp`**：把 `scpDownload` 已验证的三件套复用过来 ——
+  `timeoutMs` 超时即 `kill('SIGKILL')` 并 reject（文案含「超时」）；按本地 tmp 文件
+  **真实增长**轮询上报 `onProgress`（`expectedBytes` 未知时不上报，绝不编造百分比）；
+  正常完成 / 异常退出 / 超时三条路径**统一走 `finish()` 收尾**，定时器一律清理（无泄漏）。
+- **`downloadAll`**：把 `timeoutMs` / 每片 `expectedBytes` / 分片内 `onProgress` 透传给 scp，
+  并把片内字节增长换算成整体进度实时转发；**中间态 `downloadedBytes` 单调递增且
+  始终 < totalBytes，`percent` 最多 99%，只有全部 `verified` 才允许 100%**（不虚报）。
+- **`lib/backup.js`**：`runBackup` 接收 `transferTimeoutMs` 并传给 `downloadAll`。
+- **`lib/service.js`**：`backup()` 消费 `config.transferTimeoutMs`，未配置/非法值回退
+  3600000。**死配置正式接通。**
+
+### 测试
+
+**646 / 646 通过，0 失败**（基线 632 + 新增 14）。
+
+新增 `test/chunk-timeout-progress.test.js`（9 条，CTP-1..9）：超时 kill 与 reject 文案、
+异常退出带退出码、正常完成/超时后轮询必须停止、真实文件增长的多次进度上报、
+未知总大小不编造、透传参数、中间态存在性、片内谎报不改变最终状态。
+
+新增 `test/transfer-timeout-wiring.test.js`（4 条，CTW-1..4）：config → service → runBackup
+→ downloadAll 的全链路接线，含「未配置时回退 1 小时」；并做过变异验证（把接线改回旧代码
+测试即变红），确保不是假绿。
+
+顺带同步 2 条因 0.1.27 恢复路径改动而过期的旧断言：`buildTempRestoreScript` 默认
+**不带 `-n`**（新增 `neutralize:true` 才带的用例）、V8 用 `curl -sL` 需匹配「跟随重定向」
+而非字面 `-L`。
+
+### 兼容性
+
+**零破坏**：manifest 格式、分片命名、SHA-256 校验、断点续传（`findResumableBackup`）、
+任务锁（`server-lock.json`）、六态状态机、恢复流程**全部未改**。
+本次不实施开机自动续传，不重构状态机。
+
+### 已知限制
+
+- **重启不会自动接回正在下了一半的任务**：续传仍由「用户重新发起备份」触发
+  （`findResumableBackup` 扫描 `manifest.json` + 已落盘分片），这是既定设计而非缺陷。
+- **任务若在重启时处于 `running`，锁仍 fail-closed**：需 `/task-cancel`（`server` 参数
+  传**服务器名**，不是 serverConfigId）显式置终态并释放锁，或 `/task-lock/confirm-stale`。
+- 超时是**整片级**的（默认 1 小时/片），不是「无字节增长」的静默看门狗；
+  进度心跳只解决可观测性，不改变超时语义。
+
+### 安全 / 未变
+
+授权、主机指纹闸门、加密（R10 强制）、confirmToken、neutralize 选项、
+版本闸门均未改动。
+
+---
+
 ## [0.1.26] — 2026-11-11
 
 **修复 V7 探针：漏传数据库连接参数，导致它静默地什么也没返回。**

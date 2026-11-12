@@ -111,7 +111,7 @@ test('resolveOldDb 缺失时回退默认', () => {
 // 回归：odoo-restore 陷阱 1 —— dbfilter=^tg-odoo$ / list_db=False 时
 // `load -f` 的 exp_drop 被过滤，预建库会导致 "Database already exists" 且
 // 旧代码用 `| tail -5` 吞掉错误。修正 = 超级用户 DROP + load 不带 -f + 全量输出。
-test('buildTempRestoreScript 用超级用户 DROP 且 load 不带 -f', () => {
+test('buildTempRestoreScript 用超级用户 DROP 且 load 默认不带 -n/-f（v0.1.27）', () => {
   const s = buildTempRestoreScript();
   assert.match(s, /DROP DATABASE IF EXISTS/);
   assert.match(s, /psql -U \"\$PG_SUPER\"/);
@@ -119,8 +119,17 @@ test('buildTempRestoreScript 用超级用户 DROP 且 load 不带 -f', () => {
   const loadLine = s.split('\n').find((l) => l.includes('odoo db') && l.includes(' load '));
   assert.ok(loadLine, '应有 load 命令');
   assert.doesNotMatch(loadLine, / load -n -f /);
-  assert.match(loadLine, / load -n /);
+  // v0.1.27：neutralize 改为显式选项，默认不中立化。
+  // 旧实现把 `load -n` 写死 → 恢复「成功」但 42/43 cron 被禁、SMTP 凭据被销毁。
+  assert.doesNotMatch(loadLine, / load -n /, '默认不得中立化（-n 必须由 neutralize:true 显式开启）');
   assert.ok(!loadLine.includes('CREATE DATABASE'), '不应预建临时库');
+});
+
+test('buildTempRestoreScript neutralize:true 时才带 -n（演练场景显式开启）', () => {
+  const s = buildTempRestoreScript({ neutralize: true });
+  const loadLine = s.split('\n').find((l) => l.includes('odoo db') && l.includes(' load '));
+  assert.ok(loadLine, '应有 load 命令');
+  assert.match(loadLine, / load -n /, '显式要求中立化时必须带 -n');
 });
 
 test('buildTempRestoreScript 捕获完整 load 输出与退出码', () => {
